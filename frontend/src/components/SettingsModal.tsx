@@ -8,6 +8,7 @@ interface SettingsModalProps {
 }
 
 const PROVIDERS = [
+  ['platform', 'Platform Provider'],
   ['gateway', 'Gateway'],
   ['custom', 'Custom OpenAI-Compatible'],
   ['openai', 'OpenAI'],

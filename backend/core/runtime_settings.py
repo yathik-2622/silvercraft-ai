@@ -7,6 +7,7 @@ import httpx
 from config import settings
 
 PROVIDER_DEFAULTS = {
+    "platform": {"base_url": settings.LLM_BASE_URL, "label": "Platform Provider"},
     "gateway": {"base_url": settings.LLM_BASE_URL, "label": "Gateway"},
     "custom": {"base_url": settings.LLM_BASE_URL, "label": "Custom Gateway"},
     "openai": {"base_url": "https://api.openai.com/v1", "label": "OpenAI"},
@@ -44,8 +45,8 @@ def _mask_secret(value: str) -> str:
 
 
 def _normalize_provider(provider: Optional[str]) -> str:
-    value = (provider or "gateway").strip().lower()
-    return value if value in PROVIDER_DEFAULTS else "gateway"
+    value = (provider or "platform").strip().lower()
+    return value if value in PROVIDER_DEFAULTS else "platform"
 
 
 async def get_user_runtime_settings(db, user_id: str | None) -> dict:
@@ -78,7 +79,7 @@ def _provider_api_key(provider: str, settings_doc: dict) -> str:
 
 
 def _provider_base_url(provider: str, settings_doc: dict) -> str:
-    if provider in {"custom", "gateway"}:
+    if provider in {"custom", "gateway", "platform"}:
         return (settings_doc.get("base_url") or settings.LLM_BASE_URL).strip()
     return PROVIDER_DEFAULTS[provider]["base_url"].strip()
 

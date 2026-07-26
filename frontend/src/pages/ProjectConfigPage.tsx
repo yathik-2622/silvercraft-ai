@@ -493,8 +493,8 @@ export const ProjectConfigPage: React.FC = () => {
       </header>
 
       {screen === 'mode' ? (
-        <main className="flex-1 overflow-auto">
-          <div className="max-w-5xl mx-auto p-6 space-y-6">
+        <main className="flex-1 overflow-auto flex items-center justify-center">
+          <div className="w-full max-w-5xl p-6 space-y-6">
             {error && <div className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">{error}</div>}
             <section className="bg-white border border-slate-200 rounded-2xl p-6">
               <div className="mb-5">

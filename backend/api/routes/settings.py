@@ -15,7 +15,7 @@ router = APIRouter()
 
 
 class UpdateSettingsRequest(BaseModel):
-    provider: str = Field(default="gateway")
+    provider: str = Field(default="platform")
     base_url: str = Field(default="")
     default_model: str = Field(default="gpt-4o")
     theme: str = Field(default="dark")
@@ -28,7 +28,7 @@ class UpdateSettingsRequest(BaseModel):
 
 def _settings_response(stored: dict) -> dict:
     return {
-        "provider": stored.get("provider", "gateway"),
+        "provider": stored.get("provider", "platform"),
         "base_url": stored.get("base_url", ""),
         "default_model": stored.get("default_model", "gpt-4o"),
         "theme": stored.get("theme", "dark"),

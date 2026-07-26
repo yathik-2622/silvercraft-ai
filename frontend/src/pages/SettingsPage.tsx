@@ -5,6 +5,7 @@ import { settingsApi } from '../api/client';
 import { useSettings } from '../context/SettingsContext';
 
 const PROVIDERS = [
+  { value: 'platform', label: 'Platform Provider', baseUrl: 'Routes to our own configured platform gateway' },
   { value: 'gateway', label: 'Gateway', baseUrl: 'Use backend LLM_BASE_URL' },
   { value: 'custom', label: 'Custom OpenAI-Compatible', baseUrl: 'Your /v1 compatible endpoint' },
   { value: 'openai', label: 'OpenAI', baseUrl: 'https://api.openai.com/v1' },
@@ -35,12 +36,34 @@ const Field: React.FC<{
 export const SettingsPage: React.FC = () => {
   const navigate = useNavigate();
   const { settings, loading, updateSettings } = useSettings();
+  const [draft, setDraft] = useState(settings);
   const [models, setModels] = useState<any[]>([]);
-  const [modelStatus, setModelStatus] = useState('');
+  const [modelStatus, setModelStatus] = useState('Save provider settings to load models.');
+  const [saving, setSaving] = useState(false);
 
-  const selectedProvider = PROVIDERS.find((provider) => provider.value === settings.provider) ?? PROVIDERS[0];
+  useEffect(() => {
+    setDraft(settings);
+  }, [settings]);
+
+  const selectedProvider = PROVIDERS.find((provider) => provider.value === draft.provider) ?? PROVIDERS[0];
+
+  const hasProviderRuntime = () => {
+    if (draft.provider === 'platform') return true;
+    if (draft.provider === 'gateway') return Boolean(draft.baseUrl || draft.apiKey);
+    if (draft.provider === 'custom') return Boolean(draft.baseUrl && draft.apiKey);
+    if (draft.provider === 'openai') return Boolean(draft.openaiApiKey);
+    if (draft.provider === 'openrouter') return Boolean(draft.openrouterApiKey);
+    if (draft.provider === 'groq') return Boolean(draft.groqApiKey);
+    if (draft.provider === 'nvidia') return Boolean(draft.nvidiaApiKey);
+    return false;
+  };
 
   const discoverModels = async () => {
+    if (!hasProviderRuntime()) {
+      setModels([]);
+      setModelStatus('Provide the API key or base URL required for this provider, then save.');
+      return;
+    }
     setModelStatus('Loading provider models...');
     try {
       const res = await settingsApi.discoverModels();
@@ -51,9 +74,15 @@ export const SettingsPage: React.FC = () => {
     }
   };
 
-  useEffect(() => {
-    if (!loading) discoverModels();
-  }, [loading, settings.provider]);
+  const saveSettings = async () => {
+    setSaving(true);
+    try {
+      await updateSettings(draft);
+      await discoverModels();
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
@@ -74,9 +103,9 @@ export const SettingsPage: React.FC = () => {
               <p className="text-xs text-slate-500">Provider, credentials, base URL, and default model only.</p>
             </div>
           </div>
-          <div className="flex items-center gap-2 rounded-lg bg-[#e67225]/10 px-3 py-1.5 text-xs font-black text-[#e67225]">
-            <Save className="h-3.5 w-3.5" /> Auto-saved
-          </div>
+          <button onClick={saveSettings} disabled={saving || loading} className="flex items-center gap-2 rounded-lg bg-[#e67225] px-3 py-1.5 text-xs font-black text-white disabled:opacity-50">
+            <Save className="h-3.5 w-3.5" /> {saving ? 'Saving...' : 'Save Settings'}
+          </button>
         </div>
       </header>
 
@@ -91,7 +120,7 @@ export const SettingsPage: React.FC = () => {
               </div>
             </div>
             <button
-              onClick={discoverModels}
+              onClick={saveSettings}
               className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 hover:bg-orange-50 hover:text-[#e67225]"
             >
               <RefreshCw className="h-3.5 w-3.5" /> Refresh Models
@@ -102,25 +131,29 @@ export const SettingsPage: React.FC = () => {
             <label className="block">
               <span className="text-xs font-black uppercase tracking-wide text-slate-500">LLM Provider</span>
               <select
-                value={settings.provider}
-                onChange={(event) => updateSettings({ provider: event.target.value })}
+                value={draft.provider}
+                onChange={(event) => {
+                  setDraft((prev) => ({ ...prev, provider: event.target.value }));
+                  setModels([]);
+                  setModelStatus('Save provider settings to load models.');
+                }}
                 className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-[#e67225]/70 focus:ring-2 focus:ring-[#e67225]/15"
               >
                 {PROVIDERS.map((provider) => <option key={provider.value} value={provider.value}>{provider.label}</option>)}
               </select>
               <span className="mt-1 block text-[11px] text-slate-500">{selectedProvider.baseUrl}</span>
             </label>
-            <Field label="Default Model" value={settings.defaultModel} onChange={(value) => updateSettings({ defaultModel: value })} placeholder="gpt-4o" />
-            {(settings.provider === 'gateway' || settings.provider === 'custom') && (
+            <Field label="Default Model" value={draft.defaultModel} onChange={(value) => setDraft((prev) => ({ ...prev, defaultModel: value }))} placeholder="gpt-4o" />
+            {(draft.provider === 'gateway' || draft.provider === 'custom') && (
               <>
-                <Field label="Base URL" value={settings.baseUrl} onChange={(value) => updateSettings({ baseUrl: value })} placeholder="https://api.openai.com/v1" />
-                <Field label="Gateway / Custom API Key" type="password" value={settings.apiKey} onChange={(value) => updateSettings({ apiKey: value })} placeholder="Paste local testing key or use backend env" />
+                <Field label="Base URL" value={draft.baseUrl} onChange={(value) => setDraft((prev) => ({ ...prev, baseUrl: value }))} placeholder="https://api.openai.com/v1" />
+                <Field label="Gateway / Custom API Key" type="password" value={draft.apiKey} onChange={(value) => setDraft((prev) => ({ ...prev, apiKey: value }))} placeholder="Paste local testing key or use backend env" />
               </>
             )}
-            {settings.provider === 'openai' && <Field label="OpenAI API Key" type="password" value={settings.openaiApiKey} onChange={(value) => updateSettings({ openaiApiKey: value })} placeholder="sk-..." />}
-            {settings.provider === 'openrouter' && <Field label="OpenRouter API Key" type="password" value={settings.openrouterApiKey} onChange={(value) => updateSettings({ openrouterApiKey: value })} placeholder="sk-or-..." />}
-            {settings.provider === 'groq' && <Field label="Groq API Key" type="password" value={settings.groqApiKey} onChange={(value) => updateSettings({ groqApiKey: value })} placeholder="gsk_..." />}
-            {settings.provider === 'nvidia' && <Field label="NVIDIA API Key" type="password" value={settings.nvidiaApiKey} onChange={(value) => updateSettings({ nvidiaApiKey: value })} placeholder="nvapi-..." />}
+            {draft.provider === 'openai' && <Field label="OpenAI API Key" type="password" value={draft.openaiApiKey} onChange={(value) => setDraft((prev) => ({ ...prev, openaiApiKey: value }))} placeholder="sk-..." />}
+            {draft.provider === 'openrouter' && <Field label="OpenRouter API Key" type="password" value={draft.openrouterApiKey} onChange={(value) => setDraft((prev) => ({ ...prev, openrouterApiKey: value }))} placeholder="sk-or-..." />}
+            {draft.provider === 'groq' && <Field label="Groq API Key" type="password" value={draft.groqApiKey} onChange={(value) => setDraft((prev) => ({ ...prev, groqApiKey: value }))} placeholder="gsk_..." />}
+            {draft.provider === 'nvidia' && <Field label="NVIDIA API Key" type="password" value={draft.nvidiaApiKey} onChange={(value) => setDraft((prev) => ({ ...prev, nvidiaApiKey: value }))} placeholder="nvapi-..." />}
           </div>
 
           <div className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-3">
@@ -130,8 +163,8 @@ export const SettingsPage: React.FC = () => {
               {models.slice(0, 80).map((model) => (
                 <button
                   key={model.id}
-                  onClick={() => updateSettings({ defaultModel: model.id })}
-                  className={`rounded-lg border px-2.5 py-1.5 text-[11px] font-bold ${settings.defaultModel === model.id ? 'border-[#e67225] bg-orange-50 text-[#e67225]' : 'border-slate-200 bg-white text-slate-600 hover:border-[#e67225]/40'}`}
+                  onClick={() => setDraft((prev) => ({ ...prev, defaultModel: model.id }))}
+                  className={`rounded-lg border px-2.5 py-1.5 text-[11px] font-bold ${draft.defaultModel === model.id ? 'border-[#e67225] bg-orange-50 text-[#e67225]' : 'border-slate-200 bg-white text-slate-600 hover:border-[#e67225]/40'}`}
                 >
                   {model.name || model.id}
                 </button>

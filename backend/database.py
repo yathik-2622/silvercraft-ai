@@ -12,7 +12,7 @@ async def connect_to_mongo():
     _db.db = _db.client[settings.MONGODB_DB_NAME]
     # Quick ping to verify connection
     await _db.client.admin.command("ping")
-    print(f"✅ Connected to MongoDB: {settings.MONGODB_DB_NAME}")
+    print(f"Connected to MongoDB: {settings.MONGODB_DB_NAME}")
 
 async def close_mongo_connection():
     if _db.client:

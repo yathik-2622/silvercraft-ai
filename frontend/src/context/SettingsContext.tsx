@@ -23,7 +23,7 @@ interface SettingsContextProps {
 const SettingsContext = createContext<SettingsContextProps | undefined>(undefined);
 
 const DEFAULT_SETTINGS: LLMSettings = {
-  provider: 'gateway',
+  provider: 'platform',
   baseUrl: '',
   apiKey: '',
   defaultModel: 'gpt-4o',
