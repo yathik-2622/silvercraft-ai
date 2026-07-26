@@ -1,0 +1,22 @@
+# Python / Backend
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+backend/.env
+backend/.venv/
+
+# Node / Frontend
+node_modules/
+dist/
+frontend/dist/
+frontend/.env.local
+
+# General
+.env
+.env.*
+!.env.example
+.DS_Store
+*.zip
+aigers-universe-main/
+aigers-universe-main.zip

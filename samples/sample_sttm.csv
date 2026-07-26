@@ -1,0 +1,7 @@
+source_table,source_column,target_table,target_column,transformation_rule,data_type
+raw_users,user_id,dim_users,user_key,TRIM(user_id),VARCHAR
+raw_users,email,dim_users,email,LOWER(TRIM(email)),VARCHAR
+raw_users,created_at,dim_users,registered_at,CAST(created_at AS TIMESTAMP_NTZ),TIMESTAMP_NTZ
+raw_transactions,tx_id,fct_transactions,transaction_key,TRIM(tx_id),VARCHAR
+raw_transactions,user_id,fct_transactions,user_key,TRIM(user_id),VARCHAR
+raw_transactions,amount,fct_transactions,amount_usd,COALESCE(amount, 0),DECIMAL(10,2)

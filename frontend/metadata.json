@@ -1,0 +1,6 @@
+{
+  "name": "Assisted Data Modeling",
+  "description": "Assisted data modeling platform for Silver and Medallion data lakehouse layers with conversational assistant, interactive HITL canvas, agent marketplace, and multi-stage artifact exports.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
