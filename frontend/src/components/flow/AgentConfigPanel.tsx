@@ -76,7 +76,7 @@ export default function AgentConfigPanel({ nodeId, nodeData, onClose, onUpdate, 
                 onClick={() => handleChange(key, !(data as any)[key])}
                 className={`rounded border px-2 py-1.5 text-[11px] font-semibold transition-colors ${
                   (data as any)[key] ?? true
-                    ? 'border-[#e67225]/50 bg-[#e67225]/15 text-orange-100'
+                    ? isDark ? 'border-[#e67225]/50 bg-[#e67225]/15 text-orange-100' : 'border-[#e67225]/50 bg-[#e67225]/10 text-orange-700'
                     : isDark ? 'border-[#30363d] bg-[#0d1117] text-gray-500' : 'border-slate-200 bg-white text-slate-500'
                 }`}
               >

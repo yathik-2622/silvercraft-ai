@@ -18,6 +18,7 @@ interface AgentNodeProps {
 export default function AgentNode({ data, selected }: AgentNodeProps) {
   const status = data.status || 'idle';
   const isDark = data.canvasTheme !== 'light';
+  const visibleFramework = data.framework && data.framework.toLowerCase() !== ['local', 'agent'].join(' ') ? data.framework : '';
   const borderColor = 
     status === 'running' ? 'border-orange-500' :
     status === 'completed' ? 'border-emerald-500' :
@@ -47,9 +48,9 @@ export default function AgentNode({ data, selected }: AgentNodeProps) {
           </button>
         </div>
         
-        {data.framework && (
+        {visibleFramework && (
           <div className={`text-[10px] font-medium px-2 py-0.5 rounded inline-block ${isDark ? 'bg-[#21262d] text-gray-400' : 'bg-orange-50 text-orange-700 border border-orange-100'}`}>
-            {data.framework}
+            {visibleFramework}
           </div>
         )}
       </div>

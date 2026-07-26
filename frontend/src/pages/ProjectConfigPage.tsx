@@ -45,7 +45,7 @@ const toNode = (agent: AgentConfig, index: number): Node => ({
     agent_id: agent.id,
     name: agent.name,
     description: agent.description,
-    framework: agent.agent_type === 'remote' ? 'A2A Remote' : 'Local Agent',
+    framework: agent.agent_type === 'remote' ? 'A2A Remote' : '',
     status: 'idle',
     model: 'gpt-4o',
     model_name: 'gpt-4o',
@@ -571,11 +571,21 @@ export const ProjectConfigPage: React.FC = () => {
                   </div>
                   <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
                     {agents.map((agent) => (
-                      <div key={agent.id} draggable onDragStart={(event) => event.dataTransfer.setData('application/agent', JSON.stringify(agent))} className="border border-slate-200 rounded-xl p-3 bg-slate-50/60 cursor-grab active:cursor-grabbing">
+                      <div
+                        key={agent.id}
+                        draggable
+                        onDragStart={(event) => {
+                          event.dataTransfer.effectAllowed = 'move';
+                          event.dataTransfer.setData('application/agent', JSON.stringify(agent));
+                        }}
+                        className="border border-slate-200 rounded-xl p-3 bg-slate-50/60 cursor-grab active:cursor-grabbing hover:border-[#e67225]/40 hover:bg-orange-50/40 transition-colors"
+                        title="Drag this agent onto the canvas"
+                      >
                         <div className="flex items-start justify-between gap-2">
                           <div>
                             <div className="text-xs font-black text-slate-900">{agent.name}</div>
                             <p className="text-[10px] text-slate-500 leading-relaxed">{agent.description}</p>
+                            <div className="mt-1 text-[9px] font-black uppercase tracking-wide text-[#e67225]">Drag to canvas</div>
                             <div className="mt-2 flex flex-wrap gap-1">
                               {agent.default_skills.map((skill) => <span key={skill} className="px-1.5 py-0.5 rounded bg-white border border-slate-200 text-[9px] font-bold text-slate-600">{skill}</span>)}
                               {agent.agent_type === 'remote' && <span className="px-1.5 py-0.5 rounded bg-blue-50 border border-blue-200 text-[9px] font-bold text-blue-700">A2A</span>}

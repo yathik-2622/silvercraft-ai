@@ -118,7 +118,7 @@ export default function WorkflowCanvas({ initialNodes = [], initialEdges = [], o
           agentId: agent.id,
           name: agent.name,
           description: agent.description,
-          framework: agent.agent_type === 'remote' ? 'A2A Remote' : 'Local Agent',
+          framework: agent.agent_type === 'remote' ? 'A2A Remote' : '',
           status: 'idle',
           model: agent.model || 'gemini-2.5-flash',
           skills: (agent.default_skills ?? []).join(', '),
