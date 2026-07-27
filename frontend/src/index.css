@@ -9,3 +9,34 @@
 :root {
   --brand-orange: #e67225;
 }
+
+/* The studio stays glass-like, with orange reserved for active actions and flow. */
+.bg-slate-800 {
+  background-color: var(--brand-orange) !important;
+}
+
+.bg-slate-800:hover {
+  background-color: var(--color-brand-orange-hover) !important;
+}
+
+.focus\:border-slate-400:focus {
+  border-color: var(--brand-orange) !important;
+}
+
+@keyframes orchestration-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(230, 114, 37, 0.12); }
+  50% { box-shadow: 0 0 0 10px rgba(230, 114, 37, 0); }
+}
+
+.animate-pulse {
+  animation: orchestration-glow 1.8s ease-in-out infinite;
+}
+
+/* The second workspace section is the on-demand agent canvas. Its right edge
+   can be dragged by the user, while the internal stage accordions collapse. */
+main:has(> section:nth-of-type(2)) > section:nth-of-type(2) {
+  resize: horizontal;
+  overflow: auto;
+  min-width: 360px;
+  max-width: 900px;
+}

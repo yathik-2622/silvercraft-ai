@@ -123,6 +123,7 @@ export const orchestratorApi = {
     project_id?: string;
     workflow_id?: string;
     chat_id?: string;
+    model_name?: string;
   }) => apiClient.post('/orchestrator/run', data),
 
   injectSkill: (agent_id: string, skill_key: string, action?: string) =>
