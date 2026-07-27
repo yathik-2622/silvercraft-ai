@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     LLM_API_KEY: str = ""
     LLM_BASE_URL: str = "https://api.openai.com/v1"
     LLM_MODEL: str = "gpt-4o"
+    A2A_SHARED_SECRET: str = ""
+    A2A_PUBLIC_BASE_URL: str = ""
 
     class Config:
         case_sensitive = True

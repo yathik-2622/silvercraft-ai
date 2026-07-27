@@ -61,9 +61,9 @@ LLM_BASE_URL=https://api.openai.com/v1
 LLM_API_KEY=
 LLM_MODEL=gpt-4o
 
-# Existing Gemini orchestrator path
-GEMINI_API_KEY=
-DEFAULT_MODEL=gemini-2.0-flash
+# Optional: protect A2A calls exposed to other services
+A2A_PUBLIC_BASE_URL=http://localhost:8080
+A2A_SHARED_SECRET=
 ```
 
 Start the backend:
@@ -108,25 +108,15 @@ http://localhost:3002
 
 ## Current UI Flow
 
-1. Register or log in.
-2. Open Settings from the dashboard gear.
-3. Choose an LLM provider.
-4. Enter the API key or base URL required for that provider.
-5. Click `Save Settings`; model discovery runs only after saving.
-6. Create a project from the dashboard.
-7. Click the project card. The first page is mode selection:
-   - Default Modeling
-   - Orchestrator Modeling
-   - Custom Modeling
-8. Select a mode. The next page is source configuration plus the workflow canvas.
-9. Configure source inputs:
-   - CSV / XLSX / JSON uploads
-   - Database connection form with read-only credentials
-   - Existing model files
-   - Standard naming rules or `/skill` selection
-10. In Custom or Orchestrator mode, drag marketplace agents onto the canvas or use the add button.
-11. Click any agent node to configure model, prompt, skills, HITL, A2A, inputs, KB/context files, and KG opt-in.
-12. Click `Run Pipeline` to persist the workflow and enter Studio.
+1. Open `http://localhost:3002` and sign in with an email and password. First local sign-in creates the workspace profile.
+2. On the dashboard, verify **My projects**, **Shared projects**, compact edit/delete actions, and the settings icon.
+3. Keep **Platform provider** selected to use `LLM_*` values from backend `.env`. Do not enter a key in the UI for this mode.
+4. Create a project with name, domain, subdomain, optional description, team emails, and Foundation/Product layer.
+5. Open its card. The chat studio opens with a blank right canvas.
+6. Type `/` to preview approved industry skill Markdown, select a skill, and send a modeling request.
+7. Upload a source file or use **Connect DB**. The screen records connection metadata only; it does not store or echo the password.
+8. Confirm that the LangGraph supervisor delegates to the stage agent and output appears under the matching collapsible stage.
+9. Edit an artifact, approve its HITL output, switch Table/Graph, create/rename/delete chats, and reload the page to confirm Mongo persistence.
 
 ## Verification Commands
 

@@ -67,6 +67,10 @@ def sanitize_user_settings(doc: dict) -> dict:
 
 
 def _provider_api_key(provider: str, settings_doc: dict) -> str:
+    # Platform is an administrator-managed default. User-held keys are used only
+    # after selecting an explicit override provider in the dashboard.
+    if provider == "platform":
+        return settings.LLM_API_KEY.strip()
     if provider == "openai":
         return (settings_doc.get("openai_api_key") or settings_doc.get("api_key") or settings.LLM_API_KEY).strip()
     if provider == "openrouter":
@@ -79,7 +83,9 @@ def _provider_api_key(provider: str, settings_doc: dict) -> str:
 
 
 def _provider_base_url(provider: str, settings_doc: dict) -> str:
-    if provider in {"custom", "gateway", "platform"}:
+    if provider == "platform":
+        return settings.LLM_BASE_URL.strip()
+    if provider in {"custom", "gateway"}:
         return (settings_doc.get("base_url") or settings.LLM_BASE_URL).strip()
     return PROVIDER_DEFAULTS[provider]["base_url"].strip()
 
