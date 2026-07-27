@@ -11,9 +11,8 @@ class Settings(BaseSettings):
     MONGODB_URI: str = "mongodb://localhost:27017"
     MONGODB_DB_NAME: str = "silvercraft"
 
-    # Gemini / LLM defaults
-    GEMINI_API_KEY: Optional[str] = None
-    DEFAULT_MODEL: str = "gemini-2.0-flash"
+    # AIGERS-style OpenAI-compatible LLM defaults
+    DEFAULT_MODEL: str = "gpt-4o"
     LLM_API_KEY: str = ""
     LLM_BASE_URL: str = "https://api.openai.com/v1"
     LLM_MODEL: str = "gpt-4o"
@@ -21,5 +20,6 @@ class Settings(BaseSettings):
     class Config:
         case_sensitive = True
         env_file = ".env"
+        extra = "ignore"
 
 settings = Settings()

@@ -11,23 +11,25 @@ Powers:
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any, Dict, List, Optional, TypedDict
 
 import httpx
+from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-# LangGraph / LangChain runtime
+# LangGraph runtime
 try:
     from langgraph.graph import StateGraph, END
-    from langchain_core.messages import HumanMessage, SystemMessage
-    from langchain_google_genai import ChatGoogleGenerativeAI
     LANGGRAPH_AVAILABLE = True
 except ImportError:
     LANGGRAPH_AVAILABLE = False
 
 from config import settings
+from core.runtime_settings import resolve_llm_runtime
 from database import get_db
+from core.audit import record_audit_event
 from api.routes.auth import get_current_user
 from models.user import UserModel
 
@@ -151,29 +153,7 @@ def _build_system_prompt(stage: str, skills: List[str], schema_context: Dict[str
 # ─────────────────────────────────────────────────────────────
 def make_agent_node(stage_name: str):
     async def agent_node(state: PipelineState) -> PipelineState:
-        if not LANGGRAPH_AVAILABLE:
-            raise HTTPException(status_code=503, detail="LangGraph runtime is not installed")
-
-        api_key = settings.GEMINI_API_KEY
-        if not api_key:
-            raise HTTPException(status_code=503, detail="GEMINI_API_KEY is not configured")
-
-        llm = ChatGoogleGenerativeAI(
-            model=settings.DEFAULT_MODEL,
-            google_api_key=api_key,
-            temperature=0.65,
-        )
-
-        sys_prompt = _build_system_prompt(stage_name, state["skills"], state["schema_context"])
-        last_human_msg = next(
-            (m["content"] for m in reversed(state["messages"]) if m.get("role") == "user"),
-            "Begin analysis.",
-        )
-        response = await llm.ainvoke([
-            SystemMessage(content=sys_prompt),
-            HumanMessage(content=last_human_msg),
-        ])
-        state["output"] = response.content
+        raise HTTPException(status_code=503, detail="Use /orchestrator/run for platform LLM execution.")
         state["current_stage"] = stage_name
         return state
 
@@ -226,7 +206,7 @@ async def call_remote_agent(uri: str, payload: Dict[str, Any]) -> str:
 class OrchestratorRequest(BaseModel):
     prompt: str
     current_stage: str = "1-source-analysis"
-    workflow_type: str = "default"      # default | custom | orchestrator
+    workflow_type: str = "default"      # default | custom
     skills: List[str] = []
     schema_context: Dict[str, Any] = {}
     messages: List[Dict[str, str]] = []
@@ -235,7 +215,7 @@ class OrchestratorRequest(BaseModel):
 class OrchestratorResponse(BaseModel):
     reply: str
     stage: str
-    source: str                         # langgraph-gemini | a2a-remote
+    source: str                         # platform-llm | a2a-remote
     suggested_workflow: Optional[List[str]] = None
 
 class OrchestratorPlanRequest(BaseModel):
@@ -245,8 +225,13 @@ class OrchestratorPlanRequest(BaseModel):
     source_files: List[str] = []
     existing_model_files: List[str] = []
     standard_naming_notes: str = ""
+    workflow_mode: str = "orchestrator"
+    workflow_name: str = ""
+    approve_new_agents: bool = False
 
 class OrchestratorPlanResponse(BaseModel):
+    workflow_id: Optional[str] = None
+    project_id: Optional[str] = None
     workflow_name: str
     modeling_skill: str
     nodes: List[Dict[str, Any]]
@@ -254,6 +239,9 @@ class OrchestratorPlanResponse(BaseModel):
     created_agents: List[str] = []
     created_skills: List[str] = []
     hitl_summary: str
+    workflow_mode: str = "orchestrator"
+    requires_hitl: bool = True
+    pending_agent_creations: List[Dict[str, Any]] = []
 
 class A2AValidateRequest(BaseModel):
     card_url: str
@@ -313,25 +301,38 @@ async def run_orchestrator(req: OrchestratorRequest, db=Depends(get_db)):
             suggested_workflow=suggested_workflow,
         )
 
-    # 3. LangGraph + Gemini (when available and key is set)
-    if LANGGRAPH_AVAILABLE and settings.GEMINI_API_KEY:
-        state: PipelineState = {
-            "messages": req.messages if req.messages else [{"role": "user", "content": req.prompt}],
-            "current_stage": req.current_stage,
-            "skills": active_skills,
-            "schema_context": req.schema_context,
-            "output": "",
-        }
-        agent_fn = make_agent_node(req.current_stage)
-        result_state = await agent_fn(state)
+    # 3. AIGERS-style OpenAI-compatible platform LLM runtime
+    runtime = await resolve_llm_runtime(db, None)
+    if runtime.get("api_key") or runtime.get("provider") == "platform":
+        system_prompt = _build_system_prompt(req.current_stage, active_skills, req.schema_context)
+        try:
+            async with httpx.AsyncClient(timeout=45) as client:
+                response = await client.post(
+                    f"{runtime['base_url'].rstrip('/')}/chat/completions",
+                    headers={"Authorization": f"Bearer {runtime.get('api_key', '')}"} if runtime.get("api_key") else {},
+                    json={
+                        "model": runtime.get("default_model") or settings.DEFAULT_MODEL,
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            *req.messages,
+                            {"role": "user", "content": req.prompt},
+                        ],
+                        "temperature": 0.4,
+                    },
+                )
+                response.raise_for_status()
+                payload = response.json()
+                reply = payload.get("choices", [{}])[0].get("message", {}).get("content") or "No response content returned."
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"Platform LLM runtime is unavailable: {exc}")
         return OrchestratorResponse(
-            reply=result_state["output"],
+            reply=reply,
             stage=req.current_stage,
-            source="langgraph-gemini",
+            source="platform-llm",
             suggested_workflow=suggested_workflow,
         )
 
-    raise HTTPException(status_code=503, detail="AI Orchestration is unavailable. Check API keys and LangGraph installation.")
+    raise HTTPException(status_code=503, detail="AI Orchestration is unavailable. Configure the platform LLM provider in settings or backend env.")
 
 def _skill_from_prompt(prompt: str) -> str:
     slash = parse_slash_command(prompt)
@@ -381,10 +382,24 @@ def _required_agents_for_skill(skill: str) -> List[Dict[str, Any]]:
 
 @orchestrator_router.post("/plan", response_model=OrchestratorPlanResponse)
 async def plan_orchestrator(req: OrchestratorPlanRequest, current_user: UserModel = Depends(get_current_user), db=Depends(get_db)):
+    # Validate the project boundary before planning against project-owned inputs.
+    if req.workflow_mode not in {"orchestrator", "diy"}:
+        raise HTTPException(status_code=422, detail="workflow_mode must be orchestrator or diy")
+    project = None
+    if req.project_id:
+        try:
+            project = await db["projects"].find_one({"_id": ObjectId(req.project_id)})
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="Invalid project ID") from exc
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        if project.get("owner_id") != str(current_user.id) and str(current_user.id) not in project.get("shared_with", []):
+            raise HTTPException(status_code=403, detail="Not authorized to plan this project")
     modeling_skill = _skill_from_prompt(req.prompt)
     required = _required_agents_for_skill(modeling_skill)
     created_agents: List[str] = []
     created_skills: List[str] = []
+    pending_agent_creations: List[Dict[str, Any]] = []
 
     for skill_key in sorted({skill for agent in required for skill in agent["default_skills"]}):
         builtin_content = BUILTIN_SKILLS.get(skill_key)
@@ -403,7 +418,8 @@ async def plan_orchestrator(req: OrchestratorPlanRequest, current_user: UserMode
             })
             created_skills.append(skill_key)
 
-    installed_custom = await db["agents"].find({}).to_list(length=500)
+    # The orchestrator can use system agents plus agents owned by this user, never another user's library.
+    installed_custom = await db["agents"].find({"$or": [{"is_system": True}, {"created_by": str(current_user.id)}]}).to_list(length=500)
     installed_by_name = {a.get("name", "").lower(): a for a in installed_custom}
     installed_by_id = {str(a.get("_id")): a for a in installed_custom}
 
@@ -418,21 +434,64 @@ async def plan_orchestrator(req: OrchestratorPlanRequest, current_user: UserMode
             agent_type = selected.get("agent_type", "local")
             remote_uri = selected.get("remote_uri")
         else:
-            result = await db["agents"].insert_one({
-                "name": agent["name"],
-                "description": agent["description"],
-                "agent_type": agent["agent_type"],
-                "remote_uri": agent["remote_uri"],
-                "default_skills": agent["default_skills"],
-            })
-            agent_id = str(result.inserted_id)
-            name = agent["name"]
-            description = agent["description"]
-            skills = agent["default_skills"]
-            agent_type = "local"
-            remote_uri = None
-            created_agents.append(name)
-
+            # Prefer an exact marketplace capability before asking for custom-agent HITL approval.
+            marketplace_template = await db["marketplace_templates"].find_one({"name": agent["name"]}, {"_id": 0})
+            if marketplace_template:
+                installed = {
+                    "name": marketplace_template.get("name", agent["name"]),
+                    "description": marketplace_template.get("description", agent["description"]),
+                    "agent_type": "local",
+                    "remote_uri": None,
+                    "default_skills": marketplace_template.get("suggested_tools", agent["default_skills"]),
+                    "template_id": marketplace_template.get("template_id"),
+                    "framework": marketplace_template.get("framework", "langgraph"),
+                    "system_prompt": marketplace_template.get("default_system_prompt", ""),
+                    "model_name": marketplace_template.get("default_model_name", settings.DEFAULT_MODEL),
+                    "created_by": str(current_user.id),
+                    "is_system": False,
+                    "installed_from_marketplace": True,
+                    "created_at": datetime.utcnow(),
+                }
+                installed_result = await db["agents"].insert_one(installed)
+                agent_id = str(installed_result.inserted_id)
+                name = installed["name"]
+                description = installed["description"]
+                skills = installed["default_skills"]
+                agent_type = installed["agent_type"]
+                remote_uri = installed["remote_uri"]
+                created_agents.append(name)
+                selected = installed
+            else:
+            # Missing capabilities remain pending until the user approves agent creation.
+            # This is the orchestrator HITL boundary; it prevents silent library mutations.
+                pending_agent_creations.append({
+                    "key": agent["_id"],
+                    "name": agent["name"],
+                    "description": agent["description"],
+                    "skills": agent["default_skills"],
+                    "reason": "No matching system or user-library agent was found.",
+                })
+                if not req.approve_new_agents:
+                    agent_id = f"pending:{agent['_id']}"
+                else:
+                    result = await db["agents"].insert_one({
+                        "name": agent["name"],
+                        "description": agent["description"],
+                        "agent_type": agent["agent_type"],
+                        "remote_uri": agent["remote_uri"],
+                        "default_skills": agent["default_skills"],
+                        "created_by": str(current_user.id),
+                        "is_system": False,
+                        "generated_by": "project_orchestrator",
+                        "created_at": datetime.utcnow(),
+                    })
+                    agent_id = str(result.inserted_id)
+                    created_agents.append(agent["name"])
+                name = agent["name"]
+                description = agent["description"]
+                skills = agent["default_skills"]
+                agent_type = "local"
+                remote_uri = None
         nodes.append({
             "id": f"{agent['_id']}-{index}",
             "type": "agent",
@@ -448,6 +507,7 @@ async def plan_orchestrator(req: OrchestratorPlanRequest, current_user: UserMode
                 "inputs": ", ".join([*(req.source_files or ["all project sources"]), *(req.existing_model_files or []), req.standard_naming_notes or "standard naming notes"]),
                 "knowledgeFiles": "",
                 "hitlEnabled": True,
+                "requiresAgentCreationApproval": agent_id.startswith("pending:"),
                 "a2aEnabled": agent_type == "remote",
                 "remoteUri": remote_uri or "",
                 "customPrompt": f"Apply {modeling_skill} using project inputs. Preserve HITL review before publishing artifacts.",
@@ -466,14 +526,55 @@ async def plan_orchestrator(req: OrchestratorPlanRequest, current_user: UserMode
         for i in range(len(nodes) - 1)
     ]
 
+    workflow_name = req.workflow_name.strip() or f"{modeling_skill.replace('-', ' ').title()} Pipeline"
+    workflow_id = None
+    if req.project_id:
+        workflow_doc = {
+            "project_id": req.project_id,
+            "name": workflow_name,
+            "description": req.prompt,
+            "workflow_type": "orchestrator",
+            "steps": [],
+            "nodes": nodes,
+            "edges": edges,
+            "input_config": {
+                "source_types": req.source_types,
+                "source_files": req.source_files,
+                "existing_model_files": req.existing_model_files,
+                "standard_naming_notes": req.standard_naming_notes,
+            },
+            "orchestrator_state": {
+                "prompt": req.prompt,
+                "modeling_skill": modeling_skill,
+                "created_agents": created_agents,
+                "created_skills": created_skills,
+                "pending_agent_creations": pending_agent_creations,
+                "requires_hitl": True,
+                "status": "planned",
+            },
+            "status": "draft",
+            "created_by": str(current_user.id),
+            "created_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow(),
+        }
+        stored = await db["workflows"].insert_one(workflow_doc)
+        workflow_id = str(stored.inserted_id)
+        await db["projects"].update_one({"_id": project["_id"]}, {"$set": {"workflow_mode": req.workflow_mode, "execution_flow": "custom", "updated_at": datetime.utcnow()}})
+        await record_audit_event(db, user_id=str(current_user.id), action="workflow.orchestrator_planned", resource_type="workflow", resource_id=workflow_id, project_id=req.project_id, payload={"modeling_skill": modeling_skill, "requires_hitl": True})
+
     return OrchestratorPlanResponse(
-        workflow_name=f"{modeling_skill.replace('-', ' ').title()} Pipeline",
+        workflow_id=workflow_id,
+        project_id=req.project_id,
+        workflow_name=workflow_name,
         modeling_skill=modeling_skill,
         nodes=nodes,
         edges=edges,
         created_agents=created_agents,
         created_skills=created_skills,
         hitl_summary="Review every suggested agent node, update prompts/skills/inputs/A2A where needed, then run the pipeline.",
+        workflow_mode=req.workflow_mode,
+        requires_hitl=True,
+        pending_agent_creations=pending_agent_creations,
     )
 
 @orchestrator_router.post("/a2a/validate", response_model=A2AValidateResponse)

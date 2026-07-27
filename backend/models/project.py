@@ -22,9 +22,16 @@ class ProjectModel(BaseModel):
     canvas_state: CanvasState = Field(default_factory=CanvasState)
 
     # Project configuration
+    domain: str = ""
+    sub_domain: str = ""
+    layer: str = "foundation"  # foundation | product
+    execution_flow: str = "default"  # default | custom
+    workflow_mode: str = "default"  # default | diy | orchestrator
+    target_dialect: str = "Snowflake"
+    collaborators: List[str] = []
     source_connects: Dict[str, Any] = {}
     naming_rules: str = "snake_case"
-    llm_provider: str = "gemini"
+    llm_provider: str = "platform"
     llm_api_key: Optional[str] = None
     llm_base_url: Optional[str] = None
 
@@ -37,11 +44,25 @@ class ProjectModel(BaseModel):
 class ProjectCreate(BaseModel):
     name: str
     description: Optional[str] = None
+    domain: str = ""
+    sub_domain: str = ""
+    layer: str = "foundation"
+    execution_flow: str = "default"
+    workflow_mode: str = "default"
+    target_dialect: str = "Snowflake"
+    collaborators: List[str] = []
 
 class ProjectUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     canvas_state: Optional[CanvasState] = None
+    domain: Optional[str] = None
+    sub_domain: Optional[str] = None
+    layer: Optional[str] = None
+    execution_flow: Optional[str] = None
+    workflow_mode: Optional[str] = None
+    target_dialect: Optional[str] = None
+    collaborators: Optional[List[str]] = None
     source_connects: Optional[Dict[str, Any]] = None
     naming_rules: Optional[str] = None
     llm_provider: Optional[str] = None
@@ -58,9 +79,16 @@ class ProjectResponse(BaseModel):
     owner_id: str
     shared_with: List[str] = []
     canvas_state: CanvasState = Field(default_factory=CanvasState)
+    domain: str = ""
+    sub_domain: str = ""
+    layer: str = "foundation"
+    execution_flow: str = "default"
+    workflow_mode: str = "default"
+    target_dialect: str = "Snowflake"
+    collaborators: List[str] = []
     source_connects: Dict[str, Any] = {}
     naming_rules: str = "snake_case"
-    llm_provider: str = "gemini"
+    llm_provider: str = "platform"
     llm_base_url: Optional[str] = None
     created_at: datetime
     updated_at: datetime

@@ -5,6 +5,7 @@ from database import get_db
 from models.agent import AgentModel, AgentCreate, AgentResponse
 from models.user import UserModel
 from api.routes.auth import get_current_user
+from core.audit import record_audit_event
 
 router = APIRouter()
 
@@ -101,6 +102,7 @@ async def create_custom_agent(agent: AgentCreate, current_user: UserModel = Depe
     doc = AgentModel(**agent.model_dump(), created_by=str(current_user.id), is_system=False)
     result = await db["agents"].insert_one(doc.model_dump(by_alias=True, exclude={"id"}))
     created = await db["agents"].find_one({"_id": result.inserted_id})
+    await record_audit_event(db, user_id=str(current_user.id), action="agent.created", resource_type="agent", resource_id=str(result.inserted_id), payload={"name": agent.name})
     return _fmt(created)
 
 @router.get("/", response_model=List[AgentResponse])

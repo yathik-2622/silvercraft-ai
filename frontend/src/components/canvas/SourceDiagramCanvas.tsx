@@ -253,7 +253,7 @@ export const SourceDiagramCanvas: React.FC<SourceDiagramCanvasProps> = ({
                       >
                         <div className="flex items-center gap-1.5 min-w-0">
                           {col.isPrimaryKey ? (
-                            <Key className="w-3 h-3 text-amber-500 shrink-0" title="Primary Key" />
+                            <Key className="w-3 h-3 text-amber-500 shrink-0" />
                           ) : col.isForeignKey ? (
                             <span className="text-[9px] font-bold text-orange-600 bg-orange-50 border border-orange-200 px-1 rounded shrink-0">
                               FK

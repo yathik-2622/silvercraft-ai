@@ -35,12 +35,16 @@ interface Stage1SourceAnalysisCanvasProps {
   sourceTables: SourceTableProfile[];
   onUpdateSourceTables: (tables: SourceTableProfile[]) => void;
   onAdvanceStage?: () => void;
+  viewStyle?: "standard" | "er";
+  onViewStyleChange?: (style: "standard" | "er") => void;
 }
 
 export const Stage1SourceAnalysisCanvas: React.FC<Stage1SourceAnalysisCanvasProps> = ({
   sourceTables,
   onUpdateSourceTables,
-  onAdvanceStage
+  onAdvanceStage,
+  viewStyle,
+  onViewStyleChange
 }) => {
   const [activeTab, setActiveTab] = useState<
     "connectors" | "profiler" | "dictionary" | "classification" | "er"
@@ -52,11 +56,11 @@ export const Stage1SourceAnalysisCanvas: React.FC<Stage1SourceAnalysisCanvasProp
   const [selectedSourceType, setSelectedSourceType] = useState("PostgreSQL");
   
   // Connection credentials state (no mandatory table name or description required)
-  const [connHost, setConnHost] = useState("db.prod.enterprise.internal");
-  const [connDatabase, setConnDatabase] = useState("oltp_production");
+  const [connHost, setConnHost] = useState("");
+  const [connDatabase, setConnDatabase] = useState("");
   const [connAuthType, setConnAuthType] = useState("Password");
-  const [connUsername, setConnUsername] = useState("admin_svc");
-  const [connPassword, setConnPassword] = useState("••••••••••••");
+  const [connUsername, setConnUsername] = useState("");
+  const [connPassword, setConnPassword] = useState("");
   const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
 
@@ -146,57 +150,6 @@ export const Stage1SourceAnalysisCanvas: React.FC<Stage1SourceAnalysisCanvasProp
   const handleConnectSource = () => {
     setIsConnecting(true);
     setTimeout(() => {
-      const name = uploadedFileName
-        ? uploadedFileName.split(".")[0].toLowerCase().replace(/[^a-z0-9_]/g, "_")
-        : `imported_${selectedSourceType.toLowerCase().replace(/[^a-z0-9]/g, "")}_schema`;
-
-      const newTable: SourceTableProfile = {
-        id: `src-tbl-${Date.now()}`,
-        tableName: name,
-        description: `Auto-profiled dataset from ${selectedSourceType} connection (${connHost})`,
-        rowCount: 18500,
-        columns: [
-          {
-            id: `col-${Date.now()}-1`,
-            tableName: name,
-            columnName: "record_id",
-            dataType: "BIGINT",
-            nullPercentage: 0,
-            distinctCount: 18500,
-            totalRows: 18500,
-            sampleValues: ["10001", "10002", "10003"],
-            description: "Surrogate identity key",
-            classification: "Operational",
-            isPrimaryKey: true
-          },
-          {
-            id: `col-${Date.now()}-2`,
-            tableName: name,
-            columnName: "connection_ref",
-            dataType: "VARCHAR(64)",
-            nullPercentage: 0.1,
-            distinctCount: 18000,
-            totalRows: 18500,
-            sampleValues: ["CONN_A90", "CONN_B82"],
-            description: "External reference code",
-            classification: "Internal"
-          },
-          {
-            id: `col-${Date.now()}-3`,
-            tableName: name,
-            columnName: "amount_val",
-            dataType: "DECIMAL(12,2)",
-            nullPercentage: 0,
-            distinctCount: 4200,
-            totalRows: 18500,
-            sampleValues: ["299.99", "1250.00"],
-            description: "Financial monetary field",
-            classification: "Financial"
-          }
-        ]
-      };
-
-      onUpdateSourceTables([...sourceTables, newTable]);
       setIsConnecting(false);
       setShowConnectModal(false);
       setActiveTab("profiler");
@@ -820,7 +773,7 @@ export const Stage1SourceAnalysisCanvas: React.FC<Stage1SourceAnalysisCanvasProp
                         type="password"
                         value={connPassword}
                         onChange={(e) => setConnPassword(e.target.value)}
-                        placeholder="••••••••••••"
+                        placeholder="Password"
                         className="w-full p-2 border border-slate-300 rounded-lg font-mono text-slate-800 focus:outline-none focus:ring-1 focus:ring-orange-500"
                       />
                     </div>

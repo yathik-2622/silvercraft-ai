@@ -3,10 +3,10 @@ import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import {
   ChevronRight, Layers, Send, Bot, User, Sparkles, Check,
   CheckCircle2, RefreshCw, Zap, BookOpen, ArrowRight,
-  AlertCircle, X, MessageSquare, Copy, Edit3, Trash2, Network, FileText, FileDown
+  X, MessageSquare, Plus, Edit3, Trash2, Network, FileText, FileDown
 } from 'lucide-react';
 import { useAuthStore } from '../store/useAuthStore';
-import { orchestratorApi, skillsApi, agentsApi, projectsApi } from '../api/client';
+import { orchestratorApi, skillsApi, agentsApi, projectsApi, sessionsApi } from '../api/client';
 import { DualPaneView } from '../components/DualPaneView';
 import SkillCreateModal from '../components/SkillCreateModal';
 import type {
@@ -28,6 +28,7 @@ export const StudioPage: React.FC = () => {
   const navigate = useNavigate();
   const { user } = useAuthStore();
   const config = (location.state as any) ?? {};
+  const [chatId, setChatId] = useState<string>('');
 
   const [currentStage, setCurrentStage] = useState<HitlStageId>('1-source-analysis');
   const [isSkillModalOpen, setIsSkillModalOpen] = useState(false);
@@ -61,10 +62,32 @@ export const StudioPage: React.FC = () => {
     clientConstraints: 'snake_case, ISO timestamps, PII masking',
     standardNamingRule: config.namingRule ?? 'snake_case',
     selectedSourceType: 'CSV',
-    targetDialect: 'Databricks Delta',
+    targetDialect: config.targetDialect ?? 'Snowflake',
     globalContext: 'Enterprise Medallion Architecture. Apply governance standards.',
     skillFiles: [],
   });
+
+  // Hydrate persisted chat history while preserving the same project inputs for new chats.
+  useEffect(() => {
+    if (!id) return;
+    const loadChats = async () => {
+      try {
+        const response = await sessionsApi.listChats(id);
+        const stored = response.data ?? [];
+        if (stored.length) {
+          setChatId(stored[0].id);
+          setChatThreads(stored.map((chat: any) => ({ id: chat.id, title: chat.title, owner: 'You', updated: new Date(chat.updated_at).toLocaleString() })));
+          return;
+        }
+        const created = await sessionsApi.createChat(id, 'Current modeling run', config.workflowId);
+        setChatId(created.data.id);
+        setChatThreads([{ id: created.data.id, title: created.data.title, owner: 'You', updated: 'now' }]);
+      } catch {
+        // Keep the workspace usable when connected to an older backend deployment.
+      }
+    };
+    loadChats();
+  }, [id, config.workflowId]);
 
   const configuredCustomAgents = (config.agents ?? []).map((agent: any) => ({
     id: agent.id,
@@ -91,6 +114,7 @@ export const StudioPage: React.FC = () => {
       suggestedPrompts: prompts,
     };
     setMessages((prev) => [...prev, msg]);
+    if (chatId) void sessionsApi.appendMessage(chatId, { sender: 'assistant', text, stage: currentStage });
   };
 
   const handleSendMessage = async (text: string) => {
@@ -101,6 +125,7 @@ export const StudioPage: React.FC = () => {
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
     setMessages((prev) => [...prev, userMsg]);
+    if (chatId) void sessionsApi.appendMessage(chatId, { sender: 'user', text, stage: currentStage });
     setIsLoadingAi(true);
 
     try {
@@ -172,7 +197,7 @@ export const StudioPage: React.FC = () => {
     }
   };
 
-  const handleAdvanceStage = () => {
+  const handleAdvanceStage = async () => {
     const map: Record<HitlStageId, HitlStageId | null> = {
       '1-source-analysis': '2-conceptual',
       '2-conceptual': '3-logical',
@@ -180,6 +205,13 @@ export const StudioPage: React.FC = () => {
       '4-physical-sttm': null,
     };
     const next = map[currentStage];
+    if (config.workflowId) {
+      try {
+        await sessionsApi.decideHitl(config.workflowId, currentStage, { decision: 'approved', comment: 'Approved from modeling workspace.' });
+      } catch {
+        addBotMessage('HITL approval could not be persisted. The stage remains locally updated; retry after the backend is available.');
+      }
+    }
     if (next) {
       setCurrentStage(next);
       const stage = STAGES.find((s) => s.id === next);
@@ -239,6 +271,21 @@ export const StudioPage: React.FC = () => {
       setIsKgModalOpen(false);
     } catch (err: any) {
       addBotMessage(`Knowledge Graph push failed: ${err.response?.data?.detail || err.message || 'Unable to persist graph'}`);
+    }
+  };
+
+  // Create a separate persisted conversation while reusing the same project sources and workflow.
+  const handleNewChat = async () => {
+    if (!id) return;
+    try {
+      const response = await sessionsApi.createChat(id, 'New modeling chat', config.workflowId);
+      const chat = response.data;
+      setChatId(chat.id);
+      setMessages([]);
+      setChatThreads((prev) => [{ id: chat.id, title: chat.title, owner: 'You', updated: 'now' }, ...prev]);
+      addBotMessage('New modeling chat created. The project source inputs and configured pipeline are available here.');
+    } catch {
+      addBotMessage('Unable to create a new persisted chat. Please retry when the backend is available.');
     }
   };
 
@@ -315,10 +362,10 @@ export const StudioPage: React.FC = () => {
             {!isHistoryCollapsed && (
               <div className="p-3 space-y-2 overflow-auto">
                 <button
-                  onClick={() => setChatThreads((prev) => [{ id: `thread-${Date.now()}`, title: 'Copied modeling chat', owner: 'You', updated: 'now' }, ...prev])}
+                  onClick={handleNewChat}
                   className="w-full flex items-center justify-center gap-2 bg-[#e67225] hover:bg-[#d0621a] text-white text-xs font-bold rounded-lg py-2"
                 >
-                  <Copy className="w-3.5 h-3.5" /> Copy This Chat
+                  <Plus className="w-3.5 h-3.5" /> New Chat with Same Inputs
                 </button>
                 {chatThreads.map((thread) => (
                   <div key={thread.id} className="group border border-slate-200 rounded-xl p-3 bg-slate-50/70 hover:bg-white">

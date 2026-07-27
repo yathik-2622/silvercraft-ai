@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   Plus, Folder, FolderOpen, Clock, Users, Layers,
   LogOut, Settings, ChevronRight, Sparkles, GitBranch,
-  BarChart2, Search, Grid, List, Zap, Edit3, Trash2, UserPlus, SlidersHorizontal, X
+  BarChart2, Search, Grid, List, Zap, Edit3, Trash2, UserPlus, SlidersHorizontal, X, Store, BookOpen
 } from 'lucide-react';
 import { projectsApi } from '../api/client';
 import { useAuthStore } from '../store/useAuthStore';
@@ -12,6 +12,10 @@ interface Project {
   id: string;
   name: string;
   description?: string;
+  domain?: string;
+  layer?: 'foundation' | 'product';
+  execution_flow?: 'default' | 'custom';
+  collaborators?: string[];
   owner_id: string;
   shared_with: string[];
   created_at: string;
@@ -27,12 +31,24 @@ export const DashboardPage: React.FC = () => {
   const [showNewModal, setShowNewModal] = useState(false);
   const [newName, setNewName] = useState('');
   const [newDesc, setNewDesc] = useState('');
+  const [newDomain, setNewDomain] = useState('');
+  const [newSubDomain, setNewSubDomain] = useState('');
+  const [newLayer, setNewLayer] = useState<'foundation' | 'product'>('foundation');
+  const [newExecutionFlow, setNewExecutionFlow] = useState<'default' | 'custom'>('default');
+  const [newCollaborators, setNewCollaborators] = useState<string[]>([]);
+  const [newCollaboratorEmail, setNewCollaboratorEmail] = useState('');
   const [search, setSearch] = useState('');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+  const [dashboardTab, setDashboardTab] = useState<'owned' | 'collaborator'>('owned');
   const [editingProject, setEditingProject] = useState<Project | null>(null);
   const [teamProject, setTeamProject] = useState<Project | null>(null);
   const [editName, setEditName] = useState('');
   const [editDesc, setEditDesc] = useState('');
+  const [editDomain, setEditDomain] = useState('');
+  const [editLayer, setEditLayer] = useState<'foundation' | 'product'>('foundation');
+  const [editExecutionFlow, setEditExecutionFlow] = useState<'default' | 'custom'>('default');
+  const [editCollaborators, setEditCollaborators] = useState<string[]>([]);
+  const [editCollaboratorEmail, setEditCollaboratorEmail] = useState('');
   const [memberEmail, setMemberEmail] = useState('');
   const [actionError, setActionError] = useState('');
 
@@ -41,11 +57,16 @@ export const DashboardPage: React.FC = () => {
   }, []);
 
   const fetchProjects = async () => {
+    setLoading(true);
+    setActionError('');
     try {
-      const res = await projectsApi.list();
-      setProjects(res.data);
-    } catch {
-      // backend not running — show empty state gracefully
+      const res = await projectsApi.grouped();
+      const owned = res.data.owned_projects ?? [];
+      const collaborated = res.data.collaborator_projects ?? [];
+      setProjects([...owned, ...collaborated]);
+    } catch (err: any) {
+      setProjects([]);
+      setActionError(err.response?.data?.detail || 'Unable to load projects from the backend.');
     } finally {
       setLoading(false);
     }
@@ -55,7 +76,15 @@ export const DashboardPage: React.FC = () => {
     e.preventDefault();
     setCreating(true);
     try {
-      const res = await projectsApi.create(newName, newDesc);
+      const res = await projectsApi.create({
+        name: newName,
+        description: newDesc,
+        domain: newDomain,
+        sub_domain: newSubDomain,
+        layer: newLayer,
+        execution_flow: newExecutionFlow,
+        collaborators: newCollaborators,
+      });
       navigate(`/project/${res.data.id}/config`);
     } catch (err: any) {
       setActionError(err.response?.data?.detail || 'Unable to create project. Start the backend and database, then try again.');
@@ -68,6 +97,11 @@ export const DashboardPage: React.FC = () => {
     setEditingProject(project);
     setEditName(project.name);
     setEditDesc(project.description ?? '');
+    setEditDomain(project.domain ?? '');
+    setEditLayer(project.layer ?? 'foundation');
+    setEditExecutionFlow(project.execution_flow ?? 'default');
+    setEditCollaborators(project.collaborators ?? []);
+    setEditCollaboratorEmail('');
     setActionError('');
   };
 
@@ -75,12 +109,26 @@ export const DashboardPage: React.FC = () => {
     e.preventDefault();
     if (!editingProject) return;
     try {
-      await projectsApi.update(editingProject.id, { name: editName, description: editDesc });
+      await projectsApi.update(editingProject.id, {
+        name: editName,
+        description: editDesc,
+        domain: editDomain,
+        layer: editLayer,
+        execution_flow: editExecutionFlow,
+        collaborators: editCollaborators,
+      });
       setEditingProject(null);
       await fetchProjects();
     } catch (err: any) {
       setActionError(err.response?.data?.detail || 'Unable to update project');
     }
+  };
+
+  const addCollaborator = (email: string, list: string[], setter: (items: string[]) => void, clear: () => void) => {
+    const value = email.trim().toLowerCase();
+    if (!value || list.includes(value)) return;
+    setter([...list, value]);
+    clear();
   };
 
   const handleDelete = async (project: Project) => {
@@ -125,7 +173,8 @@ export const DashboardPage: React.FC = () => {
   };
 
   const myProjects = projects.filter((p) => p.owner_id === user?.id);
-  const sharedProjects = projects.filter((p) => p.owner_id !== user?.id);
+  const collaboratorProjects = projects.filter((p) => p.owner_id !== user?.id);
+  const activeProjects = dashboardTab === 'owned' ? myProjects : collaboratorProjects;
 
   const filteredProjects = (list: Project[]) =>
     list.filter((p) => p.name.toLowerCase().includes(search.toLowerCase()));
@@ -156,6 +205,10 @@ export const DashboardPage: React.FC = () => {
         )}
       </div>
       <h3 className="font-bold text-slate-900 text-sm mb-1 line-clamp-1">{project.name}</h3>
+      <div className="mb-2 flex flex-wrap gap-1">
+        <span className="rounded-full border border-orange-100 bg-orange-50 px-2 py-0.5 text-[10px] font-bold capitalize text-[#e67225]">{project.layer ?? 'foundation'}</span>
+        <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-bold capitalize text-slate-500">{project.execution_flow ?? 'default'}</span>
+      </div>
       {project.description && (
         <p className="text-xs text-slate-500 mb-3 line-clamp-2">{project.description}</p>
       )}
@@ -163,9 +216,9 @@ export const DashboardPage: React.FC = () => {
         <span className="flex items-center gap-1">
           <Clock className="w-3 h-3" /> {timeAgo(project.updated_at)}
         </span>
-        {project.shared_with.length > 0 && (
+        {(project.shared_with.length > 0 || (project.collaborators?.length ?? 0) > 0) && (
           <span className="flex items-center gap-1">
-            <Users className="w-3 h-3" /> {project.shared_with.length} members
+            <Users className="w-3 h-3" /> {project.collaborators?.length || project.shared_with.length} members
           </span>
         )}
         <span className="ml-auto flex items-center gap-1 text-[#e67225] font-semibold opacity-0 group-hover:opacity-100 transition-opacity">
@@ -240,6 +293,20 @@ export const DashboardPage: React.FC = () => {
           </div>
           <div className="flex items-center gap-2">
             <button
+              onClick={() => navigate('/marketplace')}
+              className="p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors"
+              title="Agent Marketplace"
+            >
+              <Store className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => navigate('/skills')}
+              className="p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors"
+              title="Skill Library"
+            >
+              <BookOpen className="w-4 h-4" />
+            </button>
+            <button
               onClick={() => navigate('/settings')}
               className="p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors"
             >
@@ -280,7 +347,7 @@ export const DashboardPage: React.FC = () => {
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
           {[
             { icon: Folder, label: 'My Projects', value: myProjects.length, color: 'text-[#e67225] bg-[#e67225]/10' },
-            { icon: Users, label: 'Shared with Me', value: sharedProjects.length, color: 'text-blue-600 bg-blue-50' },
+            { icon: Users, label: 'Collaborator Projects', value: collaboratorProjects.length, color: 'text-blue-600 bg-blue-50' },
             { icon: GitBranch, label: 'Active Workflows', value: 0, color: 'text-emerald-600 bg-emerald-50' },
             { icon: BarChart2, label: 'Artifacts Generated', value: 0, color: 'text-violet-600 bg-violet-50' },
           ].map(({ icon: Icon, label, value, color }) => (
@@ -295,16 +362,32 @@ export const DashboardPage: React.FC = () => {
         </div>
 
         {/* Toolbar */}
-        <div className="flex items-center justify-between mb-5">
-          <div className="relative flex-1 max-w-xs">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-            <input
-              type="text"
-              placeholder="Search projects..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="w-full pl-9 pr-4 py-2 border border-slate-200 rounded-xl text-sm bg-white focus:outline-none focus:border-[#e67225]/50"
-            />
+        <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex overflow-hidden rounded-xl border border-slate-200 bg-white p-1">
+              <button
+                onClick={() => setDashboardTab('owned')}
+                className={`rounded-lg px-3 py-1.5 text-xs font-black transition ${dashboardTab === 'owned' ? 'bg-[#e67225] text-white' : 'text-slate-500 hover:bg-slate-50'}`}
+              >
+                My Projects
+              </button>
+              <button
+                onClick={() => setDashboardTab('collaborator')}
+                className={`rounded-lg px-3 py-1.5 text-xs font-black transition ${dashboardTab === 'collaborator' ? 'bg-[#e67225] text-white' : 'text-slate-500 hover:bg-slate-50'}`}
+              >
+                Collaborator Projects
+              </button>
+            </div>
+            <div className="relative min-w-[240px] flex-1 lg:flex-none">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+              <input
+                type="text"
+                placeholder="Search projects..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="w-full pl-9 pr-4 py-2 border border-slate-200 rounded-xl text-sm bg-white focus:outline-none focus:border-[#e67225]/50"
+              />
+            </div>
           </div>
           <div className="flex items-center gap-2">
             <div className="flex border border-slate-200 rounded-lg overflow-hidden bg-white">
@@ -330,45 +413,45 @@ export const DashboardPage: React.FC = () => {
           </div>
         ) : projects.length === 0 ? (
           <EmptyState />
-        ) : (
-          <div className="space-y-8">
-            {myProjects.length > 0 && (
-              <section>
-                <h2 className="text-sm font-bold text-slate-700 mb-4 flex items-center gap-2">
-                  <Folder className="w-4 h-4 text-[#e67225]" /> My Projects
-                </h2>
-                <div className={viewMode === 'grid' ? 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4' : 'space-y-2'}>
-                  {filteredProjects(myProjects).map((p) => (
-                    <ProjectCard key={p.id} project={p} />
-                  ))}
-                </div>
-              </section>
-            )}
-            {sharedProjects.length > 0 && (
-              <section>
-                <h2 className="text-sm font-bold text-slate-700 mb-4 flex items-center gap-2">
-                  <Users className="w-4 h-4 text-blue-500" /> Shared with Me
-                </h2>
-                <div className={viewMode === 'grid' ? 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4' : 'space-y-2'}>
-                  {filteredProjects(sharedProjects).map((p) => (
-                    <ProjectCard key={p.id} project={p} shared />
-                  ))}
-                </div>
-              </section>
-            )}
+        ) : filteredProjects(activeProjects).length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-slate-200 bg-white py-14 text-center">
+            <h3 className="text-sm font-black text-slate-800">
+              {dashboardTab === 'owned' ? 'No owned projects found' : 'No collaborator projects found'}
+            </h3>
+            <p className="mt-1 text-xs text-slate-500">
+              {dashboardTab === 'owned'
+                ? 'Create a project with domain, collaborators, layer, and execution flow.'
+                : 'Projects shared with you by other owners will appear here.'}
+            </p>
           </div>
+        ) : (
+          <section>
+            <h2 className="text-sm font-bold text-slate-700 mb-4 flex items-center gap-2">
+              {dashboardTab === 'owned'
+                ? <><Folder className="w-4 h-4 text-[#e67225]" /> My Projects</>
+                : <><Users className="w-4 h-4 text-blue-500" /> Collaborator Projects</>}
+            </h2>
+            <div className={viewMode === 'grid' ? 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4' : 'space-y-2'}>
+              {filteredProjects(activeProjects).map((p) => (
+                <ProjectCard key={p.id} project={p} shared={dashboardTab === 'collaborator'} />
+              ))}
+            </div>
+          </section>
         )}
       </main>
 
       {/* New Project Modal */}
       {showNewModal && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-md overflow-hidden">
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-5xl overflow-hidden">
             <div className="bg-[#e67225] px-6 py-4 flex items-center gap-3">
               <Zap className="w-5 h-5 text-white" />
               <h3 className="text-white font-bold text-base">Create New Project</h3>
             </div>
-            <form onSubmit={handleCreate} className="p-6 space-y-4">
+            <form onSubmit={handleCreate} className="grid grid-cols-1 gap-4 p-6 lg:grid-cols-2">
+              <div className="lg:col-span-2 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <div className="text-xs font-black uppercase tracking-wide text-slate-500">Project Parameters</div>
+                <div className="mt-4 grid gap-4 md:grid-cols-3">
               <div>
                 <label className="text-xs font-semibold text-slate-600 block mb-1.5">Project Name *</label>
                 <input
@@ -390,7 +473,84 @@ export const DashboardPage: React.FC = () => {
                   className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-[#e67225]/60 resize-none"
                 />
               </div>
-              <div className="flex gap-3 pt-2">
+              <div>
+                <label className="text-xs font-semibold text-slate-600 block mb-1.5">Domain *</label>
+                <input
+                  type="text"
+                  value={newDomain}
+                  onChange={(e) => setNewDomain(e.target.value)}
+                  required
+                  placeholder="e.g. Retail, Finance, Claims"
+                  className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-[#e67225]/60"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-slate-600 block mb-1.5">Sub-domain</label>
+                <input
+                  type="text"
+                  value={newSubDomain}
+                  onChange={(e) => setNewSubDomain(e.target.value)}
+                  placeholder="e.g. Customer 360, Sales"
+                  className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-[#e67225]/60"
+                />
+              </div>
+                </div>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                <div className="mb-3 text-xs font-black uppercase tracking-wide text-slate-500">Layer</div>
+              <div className="grid grid-cols-2 gap-2">
+                <button type="button" onClick={() => setNewLayer('foundation')} className={`rounded-xl border px-3 py-2 text-left text-xs font-bold ${newLayer === 'foundation' ? 'border-[#e67225] bg-orange-50 text-[#e67225]' : 'border-slate-200 text-slate-600'}`}>
+                  Foundation Layer
+                </button>
+                <button type="button" onClick={() => setNewLayer('product')} className={`rounded-xl border px-3 py-2 text-left text-xs font-bold ${newLayer === 'product' ? 'border-[#e67225] bg-orange-50 text-[#e67225]' : 'border-slate-200 text-slate-600'}`}>
+                  Product Layer
+                </button>
+              </div>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                <div className="mb-3 text-xs font-black uppercase tracking-wide text-slate-500">Execution Flow</div>
+              <div className="grid grid-cols-2 gap-2">
+                <button type="button" onClick={() => setNewExecutionFlow('default')} className={`rounded-xl border px-3 py-2 text-left text-xs font-bold ${newExecutionFlow === 'default' ? 'border-[#e67225] bg-orange-50 text-[#e67225]' : 'border-slate-200 text-slate-600'}`}>
+                  Default Workflow
+                </button>
+                <button type="button" onClick={() => setNewExecutionFlow('custom')} className={`rounded-xl border px-3 py-2 text-left text-xs font-bold ${newExecutionFlow === 'custom' ? 'border-[#e67225] bg-orange-50 text-[#e67225]' : 'border-slate-200 text-slate-600'}`}>
+                  Custom Workflow
+                </button>
+              </div>
+              </div>
+              <div className="lg:col-span-2 rounded-2xl border border-slate-200 bg-white p-4">
+                <label className="text-xs font-semibold text-slate-600 block mb-1.5">Project Collaborators</label>
+                <div className="flex gap-2">
+                  <input
+                    type="email"
+                    value={newCollaboratorEmail}
+                    onChange={(e) => setNewCollaboratorEmail(e.target.value)}
+                    placeholder="member@company.com"
+                    className="flex-1 border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-[#e67225]/60"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => addCollaborator(newCollaboratorEmail, newCollaborators, setNewCollaborators, () => setNewCollaboratorEmail(''))}
+                    className="rounded-xl bg-[#e67225] px-3 text-white hover:bg-[#d0621a]"
+                    title="Add collaborator"
+                  >
+                    <Plus className="h-4 w-4" />
+                  </button>
+                </div>
+                {newCollaborators.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {newCollaborators.map((email) => (
+                      <span key={email} className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-semibold text-slate-600">
+                        {email}
+                        <button type="button" onClick={() => setNewCollaborators(newCollaborators.filter((item) => item !== email))} className="text-slate-400 hover:text-rose-600">
+                          <X className="h-3 w-3" />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="lg:col-span-2 flex gap-3 pt-2">
                 <button
                   type="button"
                   onClick={() => setShowNewModal(false)}
@@ -427,6 +587,35 @@ export const DashboardPage: React.FC = () => {
               <div>
                 <label className="text-xs font-semibold text-slate-600 block mb-1.5">Description</label>
                 <textarea value={editDesc} onChange={(e) => setEditDesc(e.target.value)} rows={3} className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-[#e67225]/60 resize-none" />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-slate-600 block mb-1.5">Domain</label>
+                <input value={editDomain} onChange={(e) => setEditDomain(e.target.value)} className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-[#e67225]/60" />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <button type="button" onClick={() => setEditLayer('foundation')} className={`rounded-xl border px-3 py-2 text-left text-xs font-bold ${editLayer === 'foundation' ? 'border-[#e67225] bg-orange-50 text-[#e67225]' : 'border-slate-200 text-slate-600'}`}>Foundation Layer</button>
+                <button type="button" onClick={() => setEditLayer('product')} className={`rounded-xl border px-3 py-2 text-left text-xs font-bold ${editLayer === 'product' ? 'border-[#e67225] bg-orange-50 text-[#e67225]' : 'border-slate-200 text-slate-600'}`}>Product Layer</button>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <button type="button" onClick={() => setEditExecutionFlow('default')} className={`rounded-xl border px-3 py-2 text-left text-xs font-bold ${editExecutionFlow === 'default' ? 'border-[#e67225] bg-orange-50 text-[#e67225]' : 'border-slate-200 text-slate-600'}`}>Default Workflow</button>
+                <button type="button" onClick={() => setEditExecutionFlow('custom')} className={`rounded-xl border px-3 py-2 text-left text-xs font-bold ${editExecutionFlow === 'custom' ? 'border-[#e67225] bg-orange-50 text-[#e67225]' : 'border-slate-200 text-slate-600'}`}>Custom Workflow</button>
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-slate-600 block mb-1.5">Collaborators</label>
+                <div className="flex gap-2">
+                  <input type="email" value={editCollaboratorEmail} onChange={(e) => setEditCollaboratorEmail(e.target.value)} placeholder="member@company.com" className="flex-1 border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-[#e67225]/60" />
+                  <button type="button" onClick={() => addCollaborator(editCollaboratorEmail, editCollaborators, setEditCollaborators, () => setEditCollaboratorEmail(''))} className="rounded-xl bg-[#e67225] px-3 text-white hover:bg-[#d0621a]" title="Add collaborator">
+                    <Plus className="h-4 w-4" />
+                  </button>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {editCollaborators.map((email) => (
+                    <span key={email} className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-semibold text-slate-600">
+                      {email}
+                      <button type="button" onClick={() => setEditCollaborators(editCollaborators.filter((item) => item !== email))} className="text-slate-400 hover:text-rose-600"><X className="h-3 w-3" /></button>
+                    </span>
+                  ))}
+                </div>
               </div>
               <div className="flex gap-3 pt-2">
                 <button type="button" onClick={() => setEditingProject(null)} className="flex-1 py-2.5 border border-slate-200 rounded-xl text-sm font-semibold text-slate-600 hover:bg-slate-50">Cancel</button>

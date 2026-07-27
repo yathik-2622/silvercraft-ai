@@ -1,8 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from config import settings
-from database import connect_to_mongo, close_mongo_connection
-from api.routes import auth, projects, skills, agents, workflows, settings as settings_routes
+from database import connect_to_mongo, close_mongo_connection, get_db
+from api.routes import auth, projects, skills, agents, workflows, marketplace, settings as settings_routes, sessions
 from orchestrator import orchestrator_router
 
 app = FastAPI(
@@ -22,6 +22,9 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup_db_client():
     await connect_to_mongo()
+    db = get_db()
+    await marketplace.ensure_marketplace_templates(db)
+    await skills.ensure_builtin_skills(db)
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
@@ -32,7 +35,9 @@ app.include_router(projects.router,     prefix=f"{settings.API_V1_STR}/projects"
 app.include_router(skills.router,       prefix=f"{settings.API_V1_STR}/skills",       tags=["Skills"])
 app.include_router(agents.router,       prefix=f"{settings.API_V1_STR}/agents",       tags=["Agents"])
 app.include_router(workflows.router,    prefix=f"{settings.API_V1_STR}/workflows",    tags=["Workflows"])
+app.include_router(marketplace.router,  prefix=f"{settings.API_V1_STR}/marketplace",  tags=["Marketplace"])
 app.include_router(settings_routes.router, prefix=f"{settings.API_V1_STR}/settings", tags=["Settings"])
+app.include_router(sessions.router, prefix=f"{settings.API_V1_STR}", tags=["Modeling Sessions"])
 app.include_router(orchestrator_router, prefix=f"{settings.API_V1_STR}/orchestrator", tags=["Orchestrator"])
 
 @app.get("/")

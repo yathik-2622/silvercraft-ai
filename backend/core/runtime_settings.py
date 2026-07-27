@@ -16,17 +16,6 @@ PROVIDER_DEFAULTS = {
     "nvidia": {"base_url": "https://integrate.api.nvidia.com/v1", "label": "NVIDIA"},
 }
 
-FALLBACK_MODELS = [
-    {"id": "gpt-4o", "name": "GPT-4o", "provider": "gateway", "free": False},
-    {"id": "gpt-4o-mini", "name": "GPT-4o Mini", "provider": "gateway", "free": False},
-    {"id": "gpt-4.1", "name": "GPT-4.1", "provider": "gateway", "free": False},
-    {"id": "gpt-4.1-mini", "name": "GPT-4.1 Mini", "provider": "gateway", "free": False},
-    {"id": "gpt-5", "name": "GPT-5", "provider": "gateway", "free": False},
-    {"id": "gpt-5-mini", "name": "GPT-5 Mini", "provider": "gateway", "free": False},
-    {"id": "llama-3.3-70b-versatile", "name": "Llama 3.3 70B Versatile", "provider": "groq", "free": False},
-    {"id": "meta/llama-3.1-405b-instruct", "name": "Llama 3.1 405B Instruct", "provider": "openrouter", "free": False},
-]
-
 MASKED_FIELDS = {
     "api_key",
     "openai_api_key",
@@ -104,12 +93,43 @@ def _to_decimal(value) -> Decimal:
         return Decimal("0")
 
 
+def _pricing_values(pricing: dict) -> list[Decimal]:
+    if not isinstance(pricing, dict):
+        return []
+    return [_to_decimal(value) for value in pricing.values() if value is not None and str(value) != ""]
+
+
+def _pricing_summary(pricing: dict) -> str:
+    if not isinstance(pricing, dict) or not pricing:
+        return ""
+    parts = []
+    for key in ("prompt", "completion", "request", "image", "web_search", "internal_reasoning"):
+        if key in pricing and pricing.get(key) not in (None, ""):
+            parts.append(f"{key.replace('_', ' ')}: {pricing[key]}")
+    return " | ".join(parts[:4])
+
+
 def _normalize_model_item(raw: dict, provider: str) -> dict:
     model_id = raw.get("id") or raw.get("name") or ""
     name = raw.get("name") or model_id
     pricing = raw.get("pricing") or {}
-    free = all(_to_decimal(pricing.get(field)) == 0 for field in ("prompt", "completion", "request", "image"))
+    pricing_numbers = _pricing_values(pricing)
+    free = bool(pricing_numbers) and all(value == 0 for value in pricing_numbers)
+    if model_id.endswith(":free") or model_id in {"openrouter/free", "openrouter/auto:free"} or "/free" in model_id:
+        free = True
     context_length = raw.get("context_length") or raw.get("top_provider", {}).get("context_length")
+    architecture = raw.get("architecture") or {}
+    supported_parameters = raw.get("supported_parameters") or []
+    tags = []
+    if free:
+        tags.append("Free")
+    if "tools" in supported_parameters:
+        tags.append("Tools")
+    if "structured_outputs" in supported_parameters or "response_format" in supported_parameters:
+        tags.append("Structured")
+    for modality in architecture.get("input_modalities") or []:
+        if modality != "text":
+            tags.append(str(modality).title())
     return {
         "id": model_id,
         "value": model_id,
@@ -119,8 +139,14 @@ def _normalize_model_item(raw: dict, provider: str) -> dict:
         "context_length": context_length,
         "description": raw.get("description") or "",
         "free": free,
-        "supports_tools": "tools" in (raw.get("supported_parameters") or []),
+        "tags": tags,
+        "supports_tools": "tools" in supported_parameters,
+        "supported_parameters": supported_parameters,
+        "architecture": architecture,
         "pricing": pricing,
+        "pricing_summary": _pricing_summary(pricing),
+        "canonical_slug": raw.get("canonical_slug") or "",
+        "created": raw.get("created"),
     }
 
 
@@ -131,7 +157,8 @@ async def discover_provider_models(provider: str, api_key: str = "", base_url: s
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     async with httpx.AsyncClient(timeout=timeout_seconds, follow_redirects=True) as client:
-        response = await client.get(f"{effective_base_url}/models", headers=headers)
+        params = {"output_modalities": "all"} if normalized_provider == "openrouter" else None
+        response = await client.get(f"{effective_base_url}/models", headers=headers, params=params)
         response.raise_for_status()
         payload = response.json()
     items = payload.get("data") if isinstance(payload, dict) else payload
@@ -144,19 +171,38 @@ async def discover_provider_models(provider: str, api_key: str = "", base_url: s
 
 async def discover_models_for_user(db, user_id: str | None = None) -> dict:
     runtime = await resolve_llm_runtime(db, user_id)
-    try:
-        result = await discover_provider_models(runtime["provider"], runtime["api_key"], runtime["base_url"])
-        return {**result, "default": runtime["default_model"], "provider_label": runtime["provider_label"]}
-    except Exception as exc:
+    if runtime["provider"] not in {"platform", "gateway"} and not runtime["api_key"]:
         return {
             "provider": runtime["provider"],
             "provider_label": runtime["provider_label"],
             "base_url": runtime["base_url"],
             "default": runtime["default_model"],
-            "count": len(FALLBACK_MODELS),
-            "models": FALLBACK_MODELS,
-            "fallback": True,
-            "error": str(exc),
+            "count": 0,
+            "models": [],
+            "error": f"{runtime['provider_label']} API key is required to load live models.",
+        }
+    try:
+        result = await discover_provider_models(runtime["provider"], runtime["api_key"], runtime["base_url"])
+        return {**result, "default": runtime["default_model"], "provider_label": runtime["provider_label"]}
+    except Exception as exc:
+        if runtime["provider"] not in {"platform", "gateway"}:
+            return {
+                "provider": runtime["provider"],
+                "provider_label": runtime["provider_label"],
+                "base_url": runtime["base_url"],
+                "default": runtime["default_model"],
+                "count": 0,
+                "models": [],
+                "error": f"Unable to load live models for {runtime['provider_label']}: {exc}",
+            }
+        return {
+            "provider": runtime["provider"],
+            "provider_label": runtime["provider_label"],
+            "base_url": runtime["base_url"],
+            "default": runtime["default_model"],
+            "count": 0,
+            "models": [],
+            "error": f"Unable to load live models for {runtime['provider_label']}: {exc}",
         }
 
 

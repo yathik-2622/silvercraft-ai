@@ -31,6 +31,10 @@ export default function AgentConfigPanel({ nodeId, nodeData, onClose, onUpdate, 
     setData((prev: any) => ({ ...prev, [key]: value }));
   };
 
+  const handleModelChange = (value: string) => {
+    setData((prev: any) => ({ ...prev, model: value, model_name: value }));
+  };
+
   const handleSave = () => {
     onUpdate(nodeId, data);
     onClose();
@@ -96,14 +100,16 @@ export default function AgentConfigPanel({ nodeId, nodeData, onClose, onUpdate, 
         <div>
           <label className={`block text-xs font-semibold mb-1 ${label}`}>Model Selection</label>
           <select
-            value={data.model || settings.defaultModel}
-            onChange={(e) => handleChange('model', e.target.value)}
+            value={data.model || data.model_name || settings.defaultModel}
+            onChange={(e) => handleModelChange(e.target.value)}
             className={`w-full border rounded-md px-3 py-2 text-sm focus:ring-1 outline-none ${input}`}
           >
-            <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
-            <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
             <option value="gpt-4o">GPT-4o</option>
-            <option value="claude-3-5-sonnet">Claude 3.5 Sonnet</option>
+            <option value="gpt-4o-mini">GPT-4o Mini</option>
+            <option value="gpt-4.1">GPT-4.1</option>
+            <option value="gpt-4.1-mini">GPT-4.1 Mini</option>
+            <option value="gpt-5">GPT-5</option>
+            <option value="gpt-5-mini">GPT-5 Mini</option>
           </select>
           <p className={`text-[10px] mt-1 ${muted}`}>Global provider: {settings.provider}</p>
         </div>

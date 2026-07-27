@@ -17,21 +17,10 @@ export const AgentModal: React.FC<AgentModalProps> = ({ isOpen, onClose, onCreat
   const [outputArtifacts, setOutputArtifacts] = useState("Custom DDL & Validation Report");
 
   // Skills and Documents states
-  const [skills, setSkills] = useState<string[]>([
-    "3NF Data Normalization",
-    "PII Sensitive Masking"
-  ]);
+  const [skills, setSkills] = useState<string[]>([]);
   const [newSkillInput, setNewSkillInput] = useState("");
 
-  const [documents, setDocuments] = useState<AgentDocument[]>([
-    {
-      id: "doc-sample-1",
-      name: "Enterprise_Naming_Convention_2026.pdf",
-      size: "1.4 MB",
-      type: "application/pdf",
-      uploadedAt: "Just now"
-    }
-  ]);
+  const [documents, setDocuments] = useState<AgentDocument[]>([]);
 
   if (!isOpen) return null;
 
@@ -94,17 +83,6 @@ export const AgentModal: React.FC<AgentModalProps> = ({ isOpen, onClose, onCreat
     setDocuments(documents.filter((d) => d.id !== docId));
   };
 
-  const handleAddSampleDocument = (sampleName: string, sampleSize: string) => {
-    const newDoc: AgentDocument = {
-      id: `doc-${Date.now()}`,
-      name: sampleName,
-      size: sampleSize,
-      type: "application/pdf",
-      uploadedAt: "Just now"
-    };
-    setDocuments((prev) => [...prev, newDoc]);
-  };
-
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name || !role) return;
@@ -132,7 +110,7 @@ export const AgentModal: React.FC<AgentModalProps> = ({ isOpen, onClose, onCreat
     setRole("");
     setDescription("");
     setSystemPrompt("");
-    setSkills(["3NF Data Normalization", "PII Sensitive Masking"]);
+    setSkills([]);
     setDocuments([]);
   };
 
@@ -353,26 +331,6 @@ export const AgentModal: React.FC<AgentModalProps> = ({ isOpen, onClose, onCreat
               </label>
             </div>
 
-            {/* Quick Sample Attachments */}
-            <div className="flex flex-wrap gap-1.5">
-              <button
-                type="button"
-                onClick={() => handleAddSampleDocument("Enterprise_Data_Governance.pdf", "2.1 MB")}
-                className="px-2 py-1 bg-white border border-slate-200 hover:border-blue-500 text-slate-700 hover:text-blue-600 rounded-lg text-[10px] font-medium flex items-center gap-1 transition-all cursor-pointer shadow-2xs"
-              >
-                <Plus className="w-3 h-3 text-blue-600" />
-                <span>Attach Spec.pdf</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => handleAddSampleDocument("HIPAA_Sensitivity_Rules.docx", "840 KB")}
-                className="px-2 py-1 bg-white border border-slate-200 hover:border-blue-500 text-slate-700 hover:text-blue-600 rounded-lg text-[10px] font-medium flex items-center gap-1 transition-all cursor-pointer shadow-2xs"
-              >
-                <Plus className="w-3 h-3 text-blue-600" />
-                <span>Attach HIPAA Rules.docx</span>
-              </button>
-            </div>
-
             {/* Uploaded Documents List */}
             {documents.length > 0 && (
               <div className="space-y-1 pt-1">
@@ -430,4 +388,3 @@ export const AgentModal: React.FC<AgentModalProps> = ({ isOpen, onClose, onCreat
     </div>
   );
 };
-

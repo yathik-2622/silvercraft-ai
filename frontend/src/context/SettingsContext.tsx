@@ -31,7 +31,7 @@ const DEFAULT_SETTINGS: LLMSettings = {
   openrouterApiKey: '',
   groqApiKey: '',
   nvidiaApiKey: '',
-  theme: 'dark',
+  theme: 'light',
 };
 
 const fromApi = (raw: any): Partial<LLMSettings> => ({

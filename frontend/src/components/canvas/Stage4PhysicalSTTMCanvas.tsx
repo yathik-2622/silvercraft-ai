@@ -17,7 +17,7 @@ import {
   X,
   ExternalLink
 } from "lucide-react";
-import { PhysicalTable, SttmMappingRow, SqlDialect } from "../../types";
+import { PhysicalTable, SttmMappingRow, SqlDialect, LogicalRelationship } from "../../types";
 import { exportStage4Excel } from "../../utils/excelExporter";
 import { generateSqlDdl } from "../../utils/ddlGenerator";
 
@@ -28,6 +28,8 @@ interface Stage4CanvasProps {
   onUpdateDialect: (dialect: SqlDialect) => void;
   onUpdateSttmRows: (rows: SttmMappingRow[]) => void;
   onUpdatePhysicalTables: (tables: PhysicalTable[]) => void;
+  logicalRelationships?: LogicalRelationship[];
+  onUpdateRelationships?: (rels: LogicalRelationship[]) => void;
   viewStyle?: "standard" | "er";
   onViewStyleChange?: (style: "standard" | "er") => void;
 }
@@ -39,6 +41,8 @@ export const Stage4PhysicalSTTMCanvas: React.FC<Stage4CanvasProps> = ({
   onUpdateDialect,
   onUpdateSttmRows,
   onUpdatePhysicalTables,
+  logicalRelationships,
+  onUpdateRelationships,
   viewStyle = "standard",
   onViewStyleChange
 }) => {

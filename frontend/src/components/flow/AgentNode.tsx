@@ -31,7 +31,7 @@ export default function AgentNode({ data, selected }: AgentNodeProps) {
       } ${selected ? 'shadow-[#e67225]/30' : ''}`}
       onClick={data.onClick}
     >
-      <Handle type="target" position={Position.Top} className={`w-3 h-3 rounded-full border-2 ${isDark ? 'bg-gray-500 border-[#161b22]' : 'bg-slate-400 border-white'}`} />
+      <Handle type="target" position={Position.Left} className={`w-3 h-3 rounded-full border-2 ${isDark ? 'bg-gray-500 border-[#161b22]' : 'bg-slate-400 border-white'}`} />
       
       <div className="p-3">
         <div className="flex items-center justify-between mb-2">
@@ -55,7 +55,7 @@ export default function AgentNode({ data, selected }: AgentNodeProps) {
         )}
       </div>
 
-      <Handle type="source" position={Position.Bottom} className={`w-3 h-3 bg-[#e67225] rounded-full border-2 ${isDark ? 'border-[#161b22]' : 'border-white'}`} />
+      <Handle type="source" position={Position.Right} className={`w-3 h-3 bg-[#e67225] rounded-full border-2 ${isDark ? 'border-[#161b22]' : 'border-white'}`} />
     </div>
   );
 }

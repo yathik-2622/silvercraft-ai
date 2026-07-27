@@ -28,13 +28,14 @@ interface SkillItem {
 
 const WORKFLOW_MODES = [
   { id: 'default', label: 'Default Modeling', desc: '4 fixed HITL agents for source, conceptual, logical, physical/STTM', icon: Workflow },
-  { id: 'orchestrator', label: 'Orchestrator Modeling', desc: 'Ask the platform to assemble the modeling pipeline and review it', icon: Bot },
-  { id: 'custom', label: 'Custom Modeling', desc: 'Start blank, select marketplace agents, and compose your own pipeline', icon: SlidersHorizontal },
+  { id: 'custom', label: 'Custom Modeling', desc: 'Start blank, use the orchestrator, or compose your own agent pipeline', icon: SlidersHorizontal },
 ] as const;
 
 const DB_PROVIDERS = ['Snowflake', 'BigQuery', 'Postgres', 'SQL Server', 'MySQL', 'Oracle', 'Databricks'];
+const TARGET_DIALECTS = ['Snowflake', 'Databricks Delta', 'PostgreSQL', 'BigQuery', 'Redshift'];
 const BUILTIN_SKILLS = ['source-analysis', 'pii-classification', '3nf-normalization', 'dimensional-modeling', 'data-vault', 'sttm'];
 const defaultPipelineIds = ['agent-source-profiler', 'agent-conceptual-modeler', 'agent-logical-normalizer', 'agent-sttm-automator'];
+type CustomBuilderMode = 'diy' | 'orchestrator';
 
 const toNode = (agent: AgentConfig, index: number): Node => ({
   id: `${agent.id}-${Date.now()}-${index}`,
@@ -98,7 +99,10 @@ export const ProjectConfigPage: React.FC = () => {
   const [screen, setScreen] = useState<'mode' | 'builder'>('mode');
   const [projectName, setProjectName] = useState(locationState?.name ?? 'New Project');
   const [projectDescription, setProjectDescription] = useState(locationState?.description ?? '');
-  const [workflowMode, setWorkflowMode] = useState<'default' | 'custom' | 'orchestrator'>('default');
+  const [projectLayer, setProjectLayer] = useState<'foundation' | 'product'>('foundation');
+  const [workflowMode, setWorkflowMode] = useState<'default' | 'custom'>('default');
+  const [customBuilderMode, setCustomBuilderMode] = useState<CustomBuilderMode>('diy');
+  const [leftPanelWidth, setLeftPanelWidth] = useState(420);
   const [sourceInputKind, setSourceInputKind] = useState<'files' | 'database'>('files');
   const [sourceFileNames, setSourceFileNames] = useState<string[]>([]);
   const [existingModelFiles, setExistingModelFiles] = useState<string[]>([]);
@@ -106,6 +110,7 @@ export const ProjectConfigPage: React.FC = () => {
   const [standardNamingFiles, setStandardNamingFiles] = useState<string[]>([]);
   const [standardNamingSkillId, setStandardNamingSkillId] = useState('');
   const [domain, setDomain] = useState('E-Commerce & Retail Sales');
+  const [targetDialect, setTargetDialect] = useState('Snowflake');
   const [databaseConnection, setDatabaseConnection] = useState({
     provider: 'Snowflake',
     host: '',
@@ -122,7 +127,7 @@ export const ProjectConfigPage: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [planning, setPlanning] = useState(false);
   const [error, setError] = useState('');
-  const [canvasTheme, setCanvasTheme] = useState<'dark' | 'light'>('dark');
+  const [canvasTheme, setCanvasTheme] = useState<'dark' | 'light'>('light');
   const [isCreateAgentOpen, setIsCreateAgentOpen] = useState(false);
   const [isCreateSkillOpen, setIsCreateSkillOpen] = useState(false);
   const [newSkill, setNewSkill] = useState({ name: '', description: '', content: '', files: [] as File[] });
@@ -152,14 +157,17 @@ export const ProjectConfigPage: React.FC = () => {
         const project = projectRes.data;
         setProjectName(project.name);
         setProjectDescription(project.description ?? '');
+        setProjectLayer(project.layer ?? 'foundation');
         const cfg = project.source_connects ?? {};
         setSourceInputKind(cfg.sourceInputKind ?? 'files');
         setSourceFileNames(cfg.sourceFileNames ?? []);
         setExistingModelFiles(cfg.existingModelFiles ?? []);
         setStandardNamingFiles(cfg.standardNamingFiles ?? []);
         setStandardNamingSkillId(cfg.standardNamingSkillId ?? '');
-        setWorkflowMode(cfg.workflowMode ?? 'default');
-        setDomain(cfg.domain ?? 'E-Commerce & Retail Sales');
+        setWorkflowMode(project.execution_flow ?? cfg.workflowMode ?? 'default');
+        setCustomBuilderMode(project.workflow_mode === 'orchestrator' ? 'orchestrator' : 'diy');
+        setDomain(project.domain ?? cfg.domain ?? 'E-Commerce & Retail Sales');
+        setTargetDialect(project.target_dialect ?? cfg.targetDialect ?? 'Snowflake');
         setStandardNamingNotes(cfg.standardNamingNotes ?? '');
         setOrchestratorPrompt(cfg.orchestratorPrompt ?? '/dimensional-modeling for this project source');
         setDatabaseConnection({ provider: 'Snowflake', host: '', port: '', database: '', username: '', password: '', ...(cfg.databaseConnection ?? {}) });
@@ -182,7 +190,7 @@ export const ProjectConfigPage: React.FC = () => {
   const selectedAgentIds = useMemo(() => nodes.map((node) => node.data.agentId), [nodes]);
 
   const setPipelineForMode = (mode = workflowMode) => {
-    if (mode === 'custom' || mode === 'orchestrator') {
+    if (mode === 'custom') {
       setNodes([]);
       setEdges([]);
       return;
@@ -201,7 +209,7 @@ export const ProjectConfigPage: React.FC = () => {
     setEdges(makeEdges(nextNodes));
   };
 
-  const selectMode = (mode: 'default' | 'custom' | 'orchestrator') => {
+  const selectMode = (mode: 'default' | 'custom') => {
     setWorkflowMode(mode);
     setScreen('builder');
     setPipelineForMode(mode);
@@ -234,12 +242,18 @@ export const ProjectConfigPage: React.FC = () => {
         source_files: sourceFileNames,
         existing_model_files: existingModelFiles,
         standard_naming_notes: [standardNamingNotes, standardNamingSkillId, ...standardNamingFiles].filter(Boolean).join(', '),
+        workflow_mode: 'orchestrator',
+        workflow_name: `${projectName} Orchestrated Pipeline`,
+        approve_new_agents: false,
       });
       setNodes(res.data.nodes);
       setEdges(res.data.edges);
       const createdAgents = res.data.created_agents?.length ? ` Created agents: ${res.data.created_agents.join(', ')}.` : '';
       const createdSkills = res.data.created_skills?.length ? ` Created skills: ${res.data.created_skills.join(', ')}.` : '';
-      setError(`${res.data.hitl_summary}${createdAgents}${createdSkills}`);
+      const pending = res.data.pending_agent_creations?.length
+        ? ` Pending HITL approval: ${res.data.pending_agent_creations.map((item: any) => item.name).join(', ')}.`
+        : '';
+      setError(`${res.data.hitl_summary}${createdAgents}${createdSkills}${pending}`);
     } catch (err: any) {
       setError(err.response?.data?.detail || 'Unable to generate orchestrator pipeline. Check backend, auth, and LLM/env setup.');
     } finally {
@@ -326,7 +340,9 @@ export const ProjectConfigPage: React.FC = () => {
     standardNamingFiles,
     standardNamingSkillId,
     workflowMode,
+    projectLayer,
     domain,
+    targetDialect,
     standardNamingNotes,
     databaseConnection: { ...databaseConnection, password: databaseConnection.password ? '__configured__' : '' },
     orchestratorPrompt,
@@ -355,16 +371,26 @@ export const ProjectConfigPage: React.FC = () => {
     setSaving(true);
     setError('');
     try {
+      const persistedWorkflowType = workflowMode === 'default' ? 'default' : customBuilderMode;
       await projectsApi.update(id, {
         name: projectName,
         description: projectDescription,
+        domain,
+        layer: projectLayer,
+        execution_flow: workflowMode,
+        workflow_mode: persistedWorkflowType,
+        target_dialect: targetDialect,
         source_connects: buildPayload(),
         naming_rules: standardNamingNotes,
       });
-      await workflowsApi.create({
+      const workflowRes = await workflowsApi.create({
         project_id: id,
-        name: `${projectName} ${workflowMode} workflow`,
-        workflow_type: workflowMode,
+        name: `${projectName} ${persistedWorkflowType} workflow`,
+        workflow_type: persistedWorkflowType,
+        description: customBuilderMode === 'orchestrator' ? orchestratorPrompt : 'DIY workflow canvas configuration',
+        nodes,
+        edges,
+        input_config: buildPayload(),
         steps: nodes.map((node, index) => ({
           id: node.id,
           agent_id: node.data.agentId ?? node.id,
@@ -380,7 +406,9 @@ export const ProjectConfigPage: React.FC = () => {
       navigate(`/project/${id}/studio`, {
         state: {
           projectName,
+          workflowId: workflowRes.data?.id,
           workflowMode,
+          customBuilderMode,
           sourceInputKind,
           sourceFileNames,
           existingModelFiles,
@@ -388,6 +416,7 @@ export const ProjectConfigPage: React.FC = () => {
           standardNamingFiles,
           standardNamingSkillId,
           domain,
+          targetDialect,
           databaseConnection: buildPayload().databaseConnection,
           agents: pipelineAgents(),
           pipelineSteps: nodes.map((node, index) => ({ id: node.id, agentId: node.data.agentId ?? node.id, order: index + 1 })),
@@ -405,6 +434,9 @@ export const ProjectConfigPage: React.FC = () => {
       <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-3">
         <h3 className="text-xs font-black text-slate-900 flex items-center gap-2"><Settings2 className="w-3.5 h-3.5 text-[#e67225]" /> Source Inputs</h3>
         <input value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="Domain / sub-domain" className="w-full border border-slate-200 rounded-lg px-3 py-2 text-xs focus:outline-none focus:border-[#e67225]/60" />
+        <select value={targetDialect} onChange={(e) => setTargetDialect(e.target.value)} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-xs bg-white">
+          {TARGET_DIALECTS.map((dialect) => <option key={dialect} value={dialect}>Target dialect: {dialect}</option>)}
+        </select>
         <div className="grid grid-cols-2 gap-2">
           <button onClick={() => setSourceInputKind('files')} className={`p-3 rounded-lg border text-left transition-all ${sourceInputKind === 'files' ? 'border-[#e67225] bg-[#e67225]/5' : 'border-slate-200 bg-white hover:border-slate-300'}`}>
             <div className="flex items-center gap-2 text-[11px] font-black text-slate-800"><Table2 className="w-4 h-4 text-[#e67225]" /> CSV / XLSX / JSON</div>
@@ -517,7 +549,10 @@ export const ProjectConfigPage: React.FC = () => {
           </div>
         </main>
       ) : (
-        <main className="flex-1 grid grid-cols-1 lg:grid-cols-[420px_1fr] overflow-hidden">
+        <main
+          className="flex-1 grid grid-cols-1 overflow-hidden lg:[grid-template-columns:var(--project-config-grid)]"
+          style={{ '--project-config-grid': `${leftPanelWidth}px 8px minmax(0,1fr)` } as React.CSSProperties}
+        >
           <aside className="bg-white border-r border-slate-200 overflow-y-auto">
             <div className="p-5 space-y-5">
               {error && <div className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">{error}</div>}
@@ -529,17 +564,37 @@ export const ProjectConfigPage: React.FC = () => {
                   <h2 className="text-sm font-black text-slate-900">{WORKFLOW_MODES.find((mode) => mode.id === workflowMode)?.label}</h2>
                   <p className="text-xs text-slate-500 mt-1">
                     {workflowMode === 'default' && 'Default mode uses the fixed 4 approved agents. Configure the source and each node before running.'}
-                    {workflowMode === 'custom' && 'Configure source inputs, then add marketplace or custom agents to the canvas.'}
-                    {workflowMode === 'orchestrator' && 'Configure source inputs, ask the orchestrator for a pipeline, then review every node.'}
+                    {workflowMode === 'custom' && (customBuilderMode === 'orchestrator'
+                      ? 'The orchestrator proposes a governed pipeline from your inputs, then pauses for HITL review.'
+                      : 'DIY mode lets you drag installed agents onto the canvas and configure every connection yourself.')}
                   </p>
                 </div>
               </section>
 
               <SourceConfigurationPanel />
 
-              {workflowMode === 'orchestrator' && (
+              {workflowMode === 'custom' && (
+                <section className="space-y-3 rounded-xl border border-slate-200 bg-white p-3">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-xs font-black text-slate-900 flex items-center gap-2"><Workflow className="w-3.5 h-3.5 text-[#e67225]" /> Custom Workflow Builder</h3>
+                    <span className="text-[10px] font-black uppercase tracking-wide text-slate-400">{customBuilderMode}</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button onClick={() => { setCustomBuilderMode('diy'); setError(''); }} className={`rounded-xl border px-3 py-3 text-left ${customBuilderMode === 'diy' ? 'border-[#e67225] bg-orange-50' : 'border-slate-200 bg-slate-50'}`}>
+                      <div className="text-xs font-black text-slate-900">DIY Workflow</div>
+                      <div className="mt-1 text-[10px] leading-relaxed text-slate-500">Drag installed agents, connect nodes, and configure the pipeline manually.</div>
+                    </button>
+                    <button onClick={() => { setCustomBuilderMode('orchestrator'); setError(''); }} className={`rounded-xl border px-3 py-3 text-left ${customBuilderMode === 'orchestrator' ? 'border-[#e67225] bg-orange-50' : 'border-slate-200 bg-slate-50'}`}>
+                      <div className="text-xs font-black text-slate-900">Orchestrator</div>
+                      <div className="mt-1 text-[10px] leading-relaxed text-slate-500">Prompt the planner to assemble agents, skills, edges, and HITL checkpoints.</div>
+                    </button>
+                  </div>
+                </section>
+              )}
+
+              {workflowMode === 'custom' && customBuilderMode === 'orchestrator' && (
                 <section className="space-y-2 rounded-xl border border-orange-200 bg-orange-50 p-3">
-                  <h3 className="text-xs font-black text-orange-900 flex items-center gap-2"><Zap className="w-3.5 h-3.5" /> Orchestrator</h3>
+                  <h3 className="text-xs font-black text-orange-900 flex items-center gap-2"><Zap className="w-3.5 h-3.5" /> Orchestrator Builder</h3>
                   <textarea value={orchestratorPrompt} onChange={(e) => setOrchestratorPrompt(e.target.value)} rows={4} placeholder="/dimensional-modeling or /data-vault..." className="w-full border border-orange-200 rounded-xl px-3 py-2 text-xs resize-none focus:outline-none focus:border-[#e67225]/60" />
                   <button onClick={generateOrchestratorPipeline} disabled={planning} className="w-full flex items-center justify-center gap-2 bg-[#e67225] hover:bg-[#d0621a] disabled:opacity-50 text-white font-bold px-3 py-2 rounded-xl text-xs">
                     {planning ? <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Zap className="w-3.5 h-3.5" />} Generate Pipeline
@@ -602,6 +657,25 @@ export const ProjectConfigPage: React.FC = () => {
               )}
             </div>
           </aside>
+
+          <div
+            className="hidden lg:block cursor-col-resize bg-slate-200 transition-colors hover:bg-[#e67225]/40"
+            onMouseDown={(event) => {
+              event.preventDefault();
+              const startX = event.clientX;
+              const startWidth = leftPanelWidth;
+              const onMove = (moveEvent: MouseEvent) => {
+                setLeftPanelWidth(Math.min(680, Math.max(320, startWidth + moveEvent.clientX - startX)));
+              };
+              const onUp = () => {
+                window.removeEventListener('mousemove', onMove);
+                window.removeEventListener('mouseup', onUp);
+              };
+              window.addEventListener('mousemove', onMove);
+              window.addEventListener('mouseup', onUp);
+            }}
+            title="Resize source configuration panel"
+          />
 
           <section className={`relative min-h-0 flex flex-col ${canvasTheme === 'dark' ? 'bg-[#0d1117]' : 'bg-slate-50'}`}>
             <div className="absolute top-4 left-4 right-4 z-20 flex items-center justify-between gap-3 pointer-events-none">

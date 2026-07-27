@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, BrainCircuit, RefreshCw, Save, Settings } from 'lucide-react';
+import { ArrowLeft, BadgeDollarSign, BrainCircuit, CheckCircle2, RefreshCw, Save, Search, Settings, Wrench } from 'lucide-react';
 import { settingsApi } from '../api/client';
 import { useSettings } from '../context/SettingsContext';
 
@@ -33,11 +33,21 @@ const Field: React.FC<{
   </label>
 );
 
+const formatContext = (value: any) => {
+  const numeric = Number(value || 0);
+  if (!numeric) return '';
+  if (numeric >= 1000000) return `${(numeric / 1000000).toFixed(1)}M ctx`;
+  if (numeric >= 1000) return `${Math.round(numeric / 1000)}K ctx`;
+  return `${numeric} ctx`;
+};
+
 export const SettingsPage: React.FC = () => {
   const navigate = useNavigate();
   const { settings, loading, updateSettings } = useSettings();
   const [draft, setDraft] = useState(settings);
   const [models, setModels] = useState<any[]>([]);
+  const [modelSearch, setModelSearch] = useState('');
+  const [modelFilter, setModelFilter] = useState<'all' | 'free' | 'tools'>('all');
   const [modelStatus, setModelStatus] = useState('Save provider settings to load models.');
   const [saving, setSaving] = useState(false);
 
@@ -46,6 +56,12 @@ export const SettingsPage: React.FC = () => {
   }, [settings]);
 
   const selectedProvider = PROVIDERS.find((provider) => provider.value === draft.provider) ?? PROVIDERS[0];
+  const visibleModels = models.filter((model) => {
+    const q = modelSearch.trim().toLowerCase();
+    const matchesText = !q || [model.id, model.name, model.description, ...(model.tags ?? [])].join(' ').toLowerCase().includes(q);
+    const matchesFilter = modelFilter === 'all' || (modelFilter === 'free' && model.free) || (modelFilter === 'tools' && model.supports_tools);
+    return matchesText && matchesFilter;
+  });
 
   const hasProviderRuntime = () => {
     if (draft.provider === 'platform') return true;
@@ -68,7 +84,7 @@ export const SettingsPage: React.FC = () => {
     try {
       const res = await settingsApi.discoverModels();
       setModels(res.data.models ?? []);
-      setModelStatus(res.data.fallback ? `Provider discovery failed; showing fallback models. ${res.data.error ?? ''}` : `Loaded ${res.data.count ?? 0} models from ${res.data.provider_label}.`);
+      setModelStatus(res.data.error ? res.data.error : `Loaded ${res.data.count ?? 0} models from ${res.data.provider_label}.`);
     } catch (err: any) {
       setModelStatus(err.response?.data?.detail || 'Unable to discover models.');
     }
@@ -76,9 +92,18 @@ export const SettingsPage: React.FC = () => {
 
   const saveSettings = async () => {
     setSaving(true);
+    setModels([]);
+    setModelStatus('Saving provider settings...');
     try {
       await updateSettings(draft);
-      await discoverModels();
+      setModelStatus('Loading models for the saved key...');
+      const res = await settingsApi.discoverModels();
+      setModels(res.data.models ?? []);
+      setModelStatus(res.data.error ? res.data.error : `Loaded ${res.data.count ?? 0} models from ${res.data.provider_label}.`);
+      const currentDefault = draft.defaultModel;
+      if (!currentDefault && res.data.default) {
+        setDraft((prev) => ({ ...prev, defaultModel: res.data.default }));
+      }
     } finally {
       setSaving(false);
     }
@@ -120,7 +145,7 @@ export const SettingsPage: React.FC = () => {
               </div>
             </div>
             <button
-              onClick={saveSettings}
+              onClick={discoverModels}
               className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 hover:bg-orange-50 hover:text-[#e67225]"
             >
               <RefreshCw className="h-3.5 w-3.5" /> Refresh Models
@@ -159,14 +184,61 @@ export const SettingsPage: React.FC = () => {
           <div className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-3">
             <div className="text-xs font-black text-slate-700">Available Models</div>
             <p className="mt-1 text-[11px] text-slate-500">{modelStatus || 'Provider model discovery is available after login.'}</p>
-            <div className="mt-3 flex max-h-44 flex-wrap gap-2 overflow-auto">
-              {models.slice(0, 80).map((model) => (
+            <div className="mt-3 flex flex-col gap-2 md:flex-row md:items-center">
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+                <input
+                  value={modelSearch}
+                  onChange={(event) => setModelSearch(event.target.value)}
+                  placeholder="Search model name, id, tags..."
+                  className="w-full rounded-xl border border-slate-200 bg-white py-2 pl-9 pr-3 text-xs outline-none focus:border-[#e67225]/60"
+                />
+              </div>
+              <div className="flex rounded-xl border border-slate-200 bg-white p-1">
+                {(['all', 'free', 'tools'] as const).map((item) => (
+                  <button key={item} type="button" onClick={() => setModelFilter(item)} className={`rounded-lg px-3 py-1.5 text-[11px] font-black capitalize ${modelFilter === item ? 'bg-[#e67225] text-white' : 'text-slate-500 hover:bg-slate-50'}`}>
+                    {item}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="mt-3 grid max-h-[520px] gap-2 overflow-auto md:grid-cols-2">
+              {visibleModels.map((model) => (
                 <button
                   key={model.id}
                   onClick={() => setDraft((prev) => ({ ...prev, defaultModel: model.id }))}
-                  className={`rounded-lg border px-2.5 py-1.5 text-[11px] font-bold ${draft.defaultModel === model.id ? 'border-[#e67225] bg-orange-50 text-[#e67225]' : 'border-slate-200 bg-white text-slate-600 hover:border-[#e67225]/40'}`}
+                  className={`rounded-xl border p-3 text-left transition ${draft.defaultModel === model.id ? 'border-[#e67225] bg-orange-50 text-[#e67225]' : 'border-slate-200 bg-white text-slate-700 hover:border-[#e67225]/40'}`}
                 >
-                  {model.name || model.id}
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="truncate text-xs font-black">{model.name || model.id}</div>
+                      <div className="mt-0.5 truncate font-mono text-[10px] text-slate-500">{model.id}</div>
+                    </div>
+                    {draft.defaultModel === model.id && <CheckCircle2 className="h-4 w-4 shrink-0 text-[#e67225]" />}
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {model.free && (
+                      <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-black text-emerald-700">
+                        <BadgeDollarSign className="h-3 w-3" /> Free
+                      </span>
+                    )}
+                    {!model.free && (
+                      <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-bold text-slate-500">
+                        Paid
+                      </span>
+                    )}
+                    {model.supports_tools && (
+                      <span className="inline-flex items-center gap-1 rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-[10px] font-bold text-blue-700">
+                        <Wrench className="h-3 w-3" /> Tools
+                      </span>
+                    )}
+                    {formatContext(model.context_length) && <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-bold text-slate-500">{formatContext(model.context_length)}</span>}
+                    {(model.tags || []).filter((tag: string) => !['Free', 'Tools'].includes(tag)).slice(0, 3).map((tag: string) => (
+                      <span key={tag} className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-bold text-slate-500">{tag}</span>
+                    ))}
+                  </div>
+                  {model.pricing_summary && <div className="mt-2 line-clamp-1 text-[10px] text-slate-500">{model.pricing_summary}</div>}
+                  {model.description && <div className="mt-1 line-clamp-2 text-[10px] leading-4 text-slate-400">{model.description}</div>}
                 </button>
               ))}
             </div>

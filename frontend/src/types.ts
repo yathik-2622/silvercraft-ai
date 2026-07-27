@@ -104,6 +104,7 @@ export interface LogicalRelationship {
   targetEntityId: string;
   sourceAttributeName: string;
   targetAttributeName: string;
+  relationshipName?: string;
   cardinality: CardinalityType;
 }
 

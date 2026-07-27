@@ -31,9 +31,6 @@ apiClient.interceptors.response.use(
 
 // ─── Auth ───────────────────────────────────────────────────
 export const authApi = {
-  register: (email: string, password: string, full_name: string) =>
-    apiClient.post('/auth/register', { email, password, full_name }),
-
   login: (email: string, password: string) => {
     const form = new URLSearchParams();
     form.append('username', email);
@@ -49,7 +46,18 @@ export const authApi = {
 // ─── Projects ────────────────────────────────────────────────
 export const projectsApi = {
   list: () => apiClient.get('/projects/'),
-  create: (name: string, description?: string) => apiClient.post('/projects/', { name, description }),
+  grouped: () => apiClient.get('/projects/grouped'),
+  create: (data: {
+    name: string;
+    description?: string;
+    domain?: string;
+    sub_domain?: string;
+    layer?: 'foundation' | 'product';
+    execution_flow?: 'default' | 'custom';
+    workflow_mode?: 'default' | 'diy' | 'orchestrator';
+    target_dialect?: string;
+    collaborators?: string[];
+  }) => apiClient.post('/projects/', data),
   get: (id: string) => apiClient.get(`/projects/${id}`),
   update: (id: string, data: object) => apiClient.put(`/projects/${id}`, data),
   delete: (id: string) => apiClient.delete(`/projects/${id}`),
@@ -83,6 +91,12 @@ export const skillsApi = {
   listBuiltin: () => apiClient.get('/orchestrator/skills/builtin'),
 };
 
+export const marketplaceApi = {
+  listTemplates: (search = '') => apiClient.get('/marketplace/templates', { params: search ? { search } : {} }),
+  getTemplate: (id: string) => apiClient.get(`/marketplace/templates/${id}`),
+  installTemplate: (id: string, data: object = {}) => apiClient.post(`/marketplace/templates/${id}/install`, data),
+};
+
 // ─── Agents ──────────────────────────────────────────────────
 export const agentsApi = {
   listPredefined: () => apiClient.get('/agents/predefined'),
@@ -95,6 +109,15 @@ export const workflowsApi = {
   listForProject: (projectId: string) => apiClient.get(`/workflows/project/${projectId}`),
   create: (data: object) => apiClient.post('/workflows/', data),
   update: (id: string, steps: object[]) => apiClient.put(`/workflows/${id}`, steps),
+};
+
+// Modeling session persistence for chat history, HITL gates, and agent execution records.
+export const sessionsApi = {
+  createChat: (projectId: string, title: string, workflowId?: string) => apiClient.post(`/projects/${projectId}/chats`, { title, workflow_id: workflowId }),
+  listChats: (projectId: string) => apiClient.get(`/projects/${projectId}/chats`),
+  appendMessage: (chatId: string, data: object) => apiClient.post(`/chats/${chatId}/messages`, data),
+  decideHitl: (workflowId: string, gateId: string, data: object) => apiClient.post(`/workflows/${workflowId}/hitl/${gateId}`, data),
+  queueAgentRun: (workflowId: string, data: object) => apiClient.post(`/workflows/${workflowId}/agent-runs`, data),
 };
 
 // ─── Orchestrator ────────────────────────────────────────────
@@ -119,6 +142,9 @@ export const orchestratorApi = {
     source_files?: string[];
     existing_model_files?: string[];
     standard_naming_notes?: string;
+    workflow_mode?: 'diy' | 'orchestrator';
+    workflow_name?: string;
+    approve_new_agents?: boolean;
   }) => apiClient.post('/orchestrator/plan', data),
 
   validateA2A: (card_url: string) => apiClient.post('/orchestrator/a2a/validate', { card_url }),

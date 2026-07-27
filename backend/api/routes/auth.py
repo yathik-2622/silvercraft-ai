@@ -43,7 +43,16 @@ async def register(user: UserCreate, db=Depends(get_db)):
 @router.post("/login", response_model=Token)
 async def login(form_data: OAuth2PasswordRequestForm = Depends(), db=Depends(get_db)):
     user = await db["users"].find_one({"email": form_data.username})
-    if not user or not verify_password(form_data.password, user["hashed_password"]):
+    if not user:
+        full_name = form_data.username.split("@")[0].replace(".", " ").replace("_", " ").title()
+        new_user = UserModel(
+            email=form_data.username,
+            hashed_password=get_password_hash(form_data.password),
+            full_name=full_name or form_data.username,
+        )
+        result = await db["users"].insert_one(new_user.model_dump(by_alias=True, exclude={"id"}))
+        user = await db["users"].find_one({"_id": result.inserted_id})
+    if not verify_password(form_data.password, user["hashed_password"]):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",

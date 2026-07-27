@@ -1,16 +1,14 @@
 import React, { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { Layers, Mail, Lock, User, ArrowRight, Eye, EyeOff, Sparkles } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Layers, Mail, Lock, ArrowRight, Eye, EyeOff, Sparkles } from 'lucide-react';
 import { authApi } from '../api/client';
 import { useAuthStore } from '../store/useAuthStore';
 
 export const LoginPage: React.FC = () => {
   const navigate = useNavigate();
   const { login } = useAuthStore();
-  const [tab, setTab] = useState<'login' | 'register'>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [fullName, setFullName] = useState('');
   const [showPwd, setShowPwd] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -30,22 +28,7 @@ export const LoginPage: React.FC = () => {
       login(meRes.data, token);
       navigate('/dashboard');
     } catch (err: any) {
-      setError(err.response?.data?.detail || 'Invalid credentials');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleRegister = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
-    setLoading(true);
-    try {
-      await authApi.register(email, password, fullName);
-      setTab('login');
-      setError('');
-    } catch (err: any) {
-      setError(err.response?.data?.detail || 'Registration failed');
+      setError(err.response?.data?.detail || 'Unable to sign in');
     } finally {
       setLoading(false);
     }
@@ -71,22 +54,6 @@ export const LoginPage: React.FC = () => {
 
         {/* Card */}
         <div className="bg-white/5 backdrop-blur-xl rounded-2xl border border-white/10 shadow-2xl overflow-hidden">
-          {/* Tab switcher */}
-          <div className="flex border-b border-white/10">
-            {(['login', 'register'] as const).map((t) => (
-              <button
-                key={t}
-                onClick={() => { setTab(t); setError(''); }}
-                className={`flex-1 py-3.5 text-sm font-bold transition-all ${tab === t
-                    ? 'text-[#e67225] border-b-2 border-[#e67225] bg-[#e67225]/5'
-                    : 'text-slate-400 hover:text-white'
-                  }`}
-              >
-                {t === 'login' ? 'Sign In' : 'Register'}
-              </button>
-            ))}
-          </div>
-
           <div className="p-8">
             {error && (
               <div className="mb-4 px-4 py-3 bg-rose-500/10 border border-rose-500/30 text-rose-400 rounded-xl text-sm">
@@ -94,24 +61,7 @@ export const LoginPage: React.FC = () => {
               </div>
             )}
 
-            <form onSubmit={tab === 'login' ? handleLogin : handleRegister} className="space-y-4">
-              {tab === 'register' && (
-                <div>
-                  <label className="block text-xs font-semibold text-slate-400 mb-1.5">Full Name</label>
-                  <div className="relative">
-                    <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-                    <input
-                      type="text"
-                      value={fullName}
-                      onChange={(e) => setFullName(e.target.value)}
-                      required
-                      placeholder="Enter your full name"
-                      className="w-full bg-white/5 border border-white/10 text-white placeholder-slate-500 rounded-xl pl-10 pr-4 py-3 text-sm focus:outline-none focus:border-[#e67225]/60 focus:bg-white/10 transition-all"
-                    />
-                  </div>
-                </div>
-              )}
-
+            <form onSubmit={handleLogin} className="space-y-4">
               <div>
                 <label className="block text-xs font-semibold text-slate-400 mb-1.5">Email Address</label>
                 <div className="relative">
@@ -159,21 +109,16 @@ export const LoginPage: React.FC = () => {
                 ) : (
                   <>
                     <Sparkles className="w-4 h-4" />
-                    {tab === 'login' ? 'Sign In to Studio' : 'Create Account'}
+                    Sign In to Studio
                     <ArrowRight className="w-4 h-4" />
                   </>
                 )}
               </button>
             </form>
 
-            {tab === 'login' && (
-              <p className="text-center text-slate-500 text-xs mt-4">
-                Don't have an account?{' '}
-                <button onClick={() => setTab('register')} className="text-[#e67225] hover:underline font-semibold">
-                  Register here
-                </button>
-              </p>
-            )}
+            <p className="text-center text-slate-500 text-xs mt-4">
+              First sign-in creates your workspace user automatically.
+            </p>
           </div>
         </div>
 
