@@ -106,7 +106,14 @@ def _docx_bytes(text: str) -> bytes:
 
 @router.post("/", response_model=ProjectResponse, status_code=201)
 async def create_project(project: ProjectCreate, current_user: UserModel = Depends(get_current_user), db=Depends(get_db)):
-    new_project = ProjectModel(name=project.name, description=project.description, owner_id=str(current_user.id))
+    collaborator_emails = list(dict.fromkeys([email.strip().lower() for email in project.collaborators if email.strip().lower() != current_user.email]))
+    registered = await db["users"].find({"email": {"$in": collaborator_emails}}, {"_id": 1}).to_list(length=200)
+    new_project = ProjectModel(
+        name=project.name, description=project.description, owner_id=str(current_user.id),
+        domain=project.domain, sub_domain=project.sub_domain, layer=project.layer,
+        execution_flow=project.execution_flow, workflow_mode=project.workflow_mode,
+        collaborators=collaborator_emails, shared_with=[str(member["_id"]) for member in registered],
+    )
     result = await db["projects"].insert_one(new_project.model_dump(by_alias=True, exclude={"id"}))
     created = await db["projects"].find_one({"_id": result.inserted_id})
     return _to_response(created)
@@ -117,6 +124,16 @@ async def list_projects(current_user: UserModel = Depends(get_current_user), db=
     cursor = db["projects"].find({"$or": [{"owner_id": user_id}, {"shared_with": user_id}]})
     projects = await cursor.to_list(length=200)
     return [_to_response(p) for p in projects]
+
+@router.get("/grouped")
+async def list_grouped_projects(current_user: UserModel = Depends(get_current_user), db=Depends(get_db)):
+    """Dashboard query: separate owner and shared-project cards for the current user."""
+    user_id = str(current_user.id)
+    projects = await db["projects"].find({"$or": [{"owner_id": user_id}, {"shared_with": user_id}]}).sort("updated_at", -1).to_list(length=200)
+    return {
+        "owned_projects": [_to_response(project).model_dump() for project in projects if project.get("owner_id") == user_id],
+        "collaborator_projects": [_to_response(project).model_dump() for project in projects if project.get("owner_id") != user_id],
+    }
 
 @router.get("/{project_id}", response_model=ProjectResponse)
 async def get_project(project_id: str, current_user: UserModel = Depends(get_current_user), db=Depends(get_db)):

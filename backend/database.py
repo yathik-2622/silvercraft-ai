@@ -12,6 +12,13 @@ async def connect_to_mongo():
     _db.db = _db.client[settings.MONGODB_DB_NAME]
     # Quick ping to verify connection
     await _db.client.admin.command("ping")
+    # These indexes match the dashboard and chat-history query patterns.
+    await _db.db["projects"].create_index("owner_id")
+    await _db.db["projects"].create_index("shared_with")
+    await _db.db["chats"].create_index([("project_id", 1), ("updated_at", -1)])
+    await _db.db["workflows"].create_index([("project_id", 1), ("updated_at", -1)])
+    await _db.db["hitl_decisions"].create_index([("workflow_id", 1), ("decided_at", -1)])
+    await _db.db["agent_runs"].create_index([("project_id", 1), ("created_at", -1)])
     print(f"Connected to MongoDB: {settings.MONGODB_DB_NAME}")
 
 async def close_mongo_connection():

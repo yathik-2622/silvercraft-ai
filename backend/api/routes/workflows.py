@@ -6,6 +6,7 @@ from database import get_db
 from models.user import UserModel
 from models.workflow import WorkflowModel, WorkflowCreate, WorkflowResponse, WorkflowStep
 from api.routes.auth import get_current_user
+from api.routes.projects import _get_authorized_project
 
 router = APIRouter()
 
@@ -16,6 +17,7 @@ def _fmt(w: dict) -> WorkflowResponse:
 
 @router.post("/", response_model=WorkflowResponse, status_code=201)
 async def create_workflow(wf: WorkflowCreate, current_user: UserModel = Depends(get_current_user), db=Depends(get_db)):
+    await _get_authorized_project(wf.project_id, str(current_user.id), db)
     doc = WorkflowModel(**{**wf.model_dump(), "created_by": str(current_user.id)})
     result = await db["workflows"].insert_one(doc.model_dump(by_alias=True, exclude={"id"}))
     created = await db["workflows"].find_one({"_id": result.inserted_id})
@@ -23,6 +25,7 @@ async def create_workflow(wf: WorkflowCreate, current_user: UserModel = Depends(
 
 @router.get("/project/{project_id}", response_model=List[WorkflowResponse])
 async def get_project_workflows(project_id: str, current_user: UserModel = Depends(get_current_user), db=Depends(get_db)):
+    await _get_authorized_project(project_id, str(current_user.id), db)
     cursor = db["workflows"].find({"project_id": project_id})
     wfs = await cursor.to_list(length=50)
     return [_fmt(w) for w in wfs]

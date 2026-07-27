@@ -70,11 +70,11 @@ def _provider_api_key(provider: str, settings_doc: dict) -> str:
     if provider == "openai":
         return (settings_doc.get("openai_api_key") or settings_doc.get("api_key") or settings.LLM_API_KEY).strip()
     if provider == "openrouter":
-        return (settings_doc.get("openrouter_api_key") or "").strip()
+        return (settings_doc.get("openrouter_api_key") or settings_doc.get("api_key") or "").strip()
     if provider == "groq":
-        return (settings_doc.get("groq_api_key") or "").strip()
+        return (settings_doc.get("groq_api_key") or settings_doc.get("api_key") or "").strip()
     if provider == "nvidia":
-        return (settings_doc.get("nvidia_api_key") or "").strip()
+        return (settings_doc.get("nvidia_api_key") or settings_doc.get("api_key") or "").strip()
     return (settings_doc.get("api_key") or settings.LLM_API_KEY).strip()
 
 

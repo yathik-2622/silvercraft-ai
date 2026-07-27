@@ -22,6 +22,12 @@ class ProjectModel(BaseModel):
     canvas_state: CanvasState = Field(default_factory=CanvasState)
 
     # Project configuration
+    domain: str = ""
+    sub_domain: str = ""
+    layer: str = "foundation"
+    execution_flow: str = "custom"
+    workflow_mode: str = "orchestrator"
+    collaborators: List[str] = []
     source_connects: Dict[str, Any] = {}
     naming_rules: str = "snake_case"
     llm_provider: str = "gemini"
@@ -37,10 +43,22 @@ class ProjectModel(BaseModel):
 class ProjectCreate(BaseModel):
     name: str
     description: Optional[str] = None
+    domain: str = ""
+    sub_domain: str = ""
+    layer: str = "foundation"
+    execution_flow: str = "custom"
+    workflow_mode: str = "orchestrator"
+    collaborators: List[str] = []
 
 class ProjectUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
+    domain: Optional[str] = None
+    sub_domain: Optional[str] = None
+    layer: Optional[str] = None
+    execution_flow: Optional[str] = None
+    workflow_mode: Optional[str] = None
+    collaborators: Optional[List[str]] = None
     canvas_state: Optional[CanvasState] = None
     source_connects: Optional[Dict[str, Any]] = None
     naming_rules: Optional[str] = None
@@ -58,6 +76,12 @@ class ProjectResponse(BaseModel):
     owner_id: str
     shared_with: List[str] = []
     canvas_state: CanvasState = Field(default_factory=CanvasState)
+    domain: str = ""
+    sub_domain: str = ""
+    layer: str = "foundation"
+    execution_flow: str = "custom"
+    workflow_mode: str = "orchestrator"
+    collaborators: List[str] = []
     source_connects: Dict[str, Any] = {}
     naming_rules: str = "snake_case"
     llm_provider: str = "gemini"

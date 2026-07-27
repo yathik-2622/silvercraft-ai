@@ -18,6 +18,8 @@ class WorkflowModel(BaseModel):
     project_id: str
     name: str
     workflow_type: str = "default"       # default | custom | orchestrator
+    description: str = ""
+    status: str = "draft"
     steps: List[WorkflowStep] = []
     created_by: str
     created_at: datetime = Field(default_factory=datetime.utcnow)
@@ -29,6 +31,8 @@ class WorkflowCreate(BaseModel):
     project_id: str
     name: str
     workflow_type: str = "default"
+    description: str = ""
+    status: str = "draft"
     steps: List[WorkflowStep] = []
     created_by: Optional[str] = None
 
@@ -37,6 +41,8 @@ class WorkflowResponse(BaseModel):
     project_id: str
     name: str
     workflow_type: str
+    description: str = ""
+    status: str = "draft"
     steps: List[WorkflowStep] = []
     created_by: str
     created_at: Optional[datetime] = None

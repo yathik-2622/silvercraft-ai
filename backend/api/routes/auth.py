@@ -43,7 +43,17 @@ async def register(user: UserCreate, db=Depends(get_db)):
 @router.post("/login", response_model=Token)
 async def login(form_data: OAuth2PasswordRequestForm = Depends(), db=Depends(get_db)):
     user = await db["users"].find_one({"email": form_data.username})
-    if not user or not verify_password(form_data.password, user["hashed_password"]):
+    # The product deliberately exposes a single Sign In screen. On first sign in,
+    # provision the local workspace user; production deployments should replace
+    # this with enterprise SSO or an allow-listed identity provider.
+    if not user:
+        email = form_data.username.strip().lower()
+        if not email or not form_data.password:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Email and password are required")
+        new_user = UserModel(email=email, hashed_password=get_password_hash(form_data.password), full_name=email.split("@", 1)[0])
+        result = await db["users"].insert_one(new_user.model_dump(by_alias=True, exclude={"id"}))
+        user = await db["users"].find_one({"_id": result.inserted_id})
+    if not verify_password(form_data.password, user["hashed_password"]):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",

@@ -1,186 +1,46 @@
 import React, { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { Layers, Mail, Lock, User, ArrowRight, Eye, EyeOff, Sparkles } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { ArrowRight, Eye, EyeOff, Layers, Lock, Mail, Sparkles } from 'lucide-react';
 import { authApi } from '../api/client';
 import { useAuthStore } from '../store/useAuthStore';
 
+/** Single-entry sign-in: first use is provisioned by the backend for this workspace. */
 export const LoginPage: React.FC = () => {
   const navigate = useNavigate();
   const { login } = useAuthStore();
-  const [tab, setTab] = useState<'login' | 'register'>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [fullName, setFullName] = useState('');
-  const [showPwd, setShowPwd] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const signIn = async (event: React.FormEvent) => {
+    event.preventDefault();
     setError('');
     setLoading(true);
     try {
-      const res = await authApi.login(email, password);
-      const token = res.data.access_token;
-      
-      // We must inject the token into Zustand *before* calling /me so the interceptor uses it
+      const tokenResponse = await authApi.login(email, password);
+      const token = tokenResponse.data.access_token;
       useAuthStore.setState({ token });
-      
-      const meRes = await authApi.me();
-      login(meRes.data, token);
+      const userResponse = await authApi.me();
+      login(userResponse.data, token);
       navigate('/dashboard');
-    } catch (err: any) {
-      setError(err.response?.data?.detail || 'Invalid credentials');
-    } finally {
-      setLoading(false);
-    }
+    } catch (requestError: any) {
+      setError(requestError.response?.data?.detail || 'Unable to sign in.');
+    } finally { setLoading(false); }
   };
 
-  const handleRegister = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
-    setLoading(true);
-    try {
-      await authApi.register(email, password, fullName);
-      setTab('login');
-      setError('');
-    } catch (err: any) {
-      setError(err.response?.data?.detail || 'Registration failed');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 flex items-center justify-center p-4">
-      {/* Background pattern */}
-      <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-[#e67225]/10 rounded-full blur-3xl" />
-        <div className="absolute bottom-1/4 right-1/4 w-80 h-80 bg-[#e67225]/5 rounded-full blur-3xl" />
-      </div>
-
-      <div className="relative w-full max-w-md">
-        {/* Logo */}
-        <div className="flex flex-col items-center mb-8">
-          <div className="w-14 h-14 bg-[#e67225] rounded-2xl flex items-center justify-center shadow-2xl mb-4">
-            <Layers className="w-7 h-7 text-white" />
-          </div>
-          <h1 className="text-2xl font-black text-white tracking-tight">SilverCraft AI</h1>
-          <p className="text-slate-400 text-sm mt-1">Enterprise Data Modeling Platform</p>
-        </div>
-
-        {/* Card */}
-        <div className="bg-white/5 backdrop-blur-xl rounded-2xl border border-white/10 shadow-2xl overflow-hidden">
-          {/* Tab switcher */}
-          <div className="flex border-b border-white/10">
-            {(['login', 'register'] as const).map((t) => (
-              <button
-                key={t}
-                onClick={() => { setTab(t); setError(''); }}
-                className={`flex-1 py-3.5 text-sm font-bold transition-all ${tab === t
-                    ? 'text-[#e67225] border-b-2 border-[#e67225] bg-[#e67225]/5'
-                    : 'text-slate-400 hover:text-white'
-                  }`}
-              >
-                {t === 'login' ? 'Sign In' : 'Register'}
-              </button>
-            ))}
-          </div>
-
-          <div className="p-8">
-            {error && (
-              <div className="mb-4 px-4 py-3 bg-rose-500/10 border border-rose-500/30 text-rose-400 rounded-xl text-sm">
-                {error}
-              </div>
-            )}
-
-            <form onSubmit={tab === 'login' ? handleLogin : handleRegister} className="space-y-4">
-              {tab === 'register' && (
-                <div>
-                  <label className="block text-xs font-semibold text-slate-400 mb-1.5">Full Name</label>
-                  <div className="relative">
-                    <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-                    <input
-                      type="text"
-                      value={fullName}
-                      onChange={(e) => setFullName(e.target.value)}
-                      required
-                      placeholder="Enter your full name"
-                      className="w-full bg-white/5 border border-white/10 text-white placeholder-slate-500 rounded-xl pl-10 pr-4 py-3 text-sm focus:outline-none focus:border-[#e67225]/60 focus:bg-white/10 transition-all"
-                    />
-                  </div>
-                </div>
-              )}
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-400 mb-1.5">Email Address</label>
-                <div className="relative">
-                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-                  <input
-                    type="email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    required
-                    placeholder="you@enterprise.com"
-                    className="w-full bg-white/5 border border-white/10 text-white placeholder-slate-500 rounded-xl pl-10 pr-4 py-3 text-sm focus:outline-none focus:border-[#e67225]/60 focus:bg-white/10 transition-all"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-400 mb-1.5">Password</label>
-                <div className="relative">
-                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-                  <input
-                    type={showPwd ? 'text' : 'password'}
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    required
-                    placeholder="••••••••"
-                    className="w-full bg-white/5 border border-white/10 text-white placeholder-slate-500 rounded-xl pl-10 pr-10 py-3 text-sm focus:outline-none focus:border-[#e67225]/60 focus:bg-white/10 transition-all"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPwd(!showPwd)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"
-                  >
-                    {showPwd ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-              </div>
-
-              <button
-                type="submit"
-                disabled={loading}
-                className="w-full bg-[#e67225] hover:bg-[#d0621a] disabled:opacity-50 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition-all shadow-lg hover:shadow-[#e67225]/30 hover:-translate-y-0.5 mt-2"
-              >
-                {loading ? (
-                  <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                ) : (
-                  <>
-                    <Sparkles className="w-4 h-4" />
-                    {tab === 'login' ? 'Sign In to Studio' : 'Create Account'}
-                    <ArrowRight className="w-4 h-4" />
-                  </>
-                )}
-              </button>
-            </form>
-
-            {tab === 'login' && (
-              <p className="text-center text-slate-500 text-xs mt-4">
-                Don't have an account?{' '}
-                <button onClick={() => setTab('register')} className="text-[#e67225] hover:underline font-semibold">
-                  Register here
-                </button>
-              </p>
-            )}
-          </div>
-        </div>
-
-        <p className="text-center text-slate-600 text-xs mt-6">
-          © 2025 SilverCraft AI · Enterprise Architecture Studio
-        </p>
-      </div>
-    </div>
-  );
+  return <div className="flex min-h-screen items-center justify-center overflow-hidden bg-slate-950 p-4">
+    <div className="pointer-events-none absolute inset-0"><div className="absolute left-[12%] top-[15%] h-80 w-80 rounded-full bg-orange-500/15 blur-3xl" /><div className="absolute bottom-[8%] right-[10%] h-96 w-96 rounded-full bg-sky-500/10 blur-3xl" /></div>
+    <main className="relative w-full max-w-md rounded-3xl border border-white/10 bg-white/[0.06] p-8 shadow-2xl backdrop-blur-xl transition-transform duration-300 hover:-translate-y-1">
+      <div className="mb-8 text-center"><div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-[#e67225] shadow-lg shadow-orange-500/25"><Layers className="h-7 w-7 text-white" /></div><h1 className="mt-4 text-2xl font-black tracking-tight text-white">SilverCraft AI</h1><p className="mt-1 text-sm text-slate-400">Sign in to your modeling workspace</p></div>
+      {error && <div className="mb-4 rounded-xl border border-rose-400/30 bg-rose-400/10 px-4 py-3 text-sm text-rose-200">{error}</div>}
+      <form onSubmit={signIn} className="space-y-4">
+        <label className="block text-xs font-bold text-slate-300">Email<div className="relative mt-1.5"><Mail className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" /><input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@company.com" className="w-full rounded-xl border border-white/10 bg-white/5 py-3 pl-10 pr-3 text-sm text-white outline-none transition focus:border-orange-400/70 focus:bg-white/10" /></div></label>
+        <label className="block text-xs font-bold text-slate-300">Password<div className="relative mt-1.5"><Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" /><input required type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="••••••••" className="w-full rounded-xl border border-white/10 bg-white/5 py-3 pl-10 pr-10 text-sm text-white outline-none transition focus:border-orange-400/70 focus:bg-white/10" /><button type="button" onClick={() => setShowPassword((value) => !value)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white">{showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}</button></div></label>
+        <button disabled={loading} className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#e67225] py-3 text-sm font-black text-white shadow-lg shadow-orange-500/20 transition hover:-translate-y-0.5 hover:bg-[#cf5e19] disabled:opacity-60">{loading ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" /> : <><Sparkles className="h-4 w-4" /> Sign in <ArrowRight className="h-4 w-4" /></>}</button>
+      </form>
+      <p className="mt-5 text-center text-[11px] leading-5 text-slate-500">Use your email and password. A first sign-in creates your local workspace profile.</p>
+    </main>
+  </div>;
 };

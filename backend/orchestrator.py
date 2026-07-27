@@ -30,6 +30,7 @@ from config import settings
 from database import get_db
 from api.routes.auth import get_current_user
 from models.user import UserModel
+from core.chat_orchestration import run_chat_orchestration
 
 orchestrator_router = APIRouter()
 
@@ -231,12 +232,17 @@ class OrchestratorRequest(BaseModel):
     schema_context: Dict[str, Any] = {}
     messages: List[Dict[str, str]] = []
     remote_agent_uri: Optional[str] = None
+    project_id: Optional[str] = None
+    workflow_id: Optional[str] = None
+    chat_id: Optional[str] = None
 
 class OrchestratorResponse(BaseModel):
     reply: str
     stage: str
     source: str                         # langgraph-gemini | a2a-remote
     suggested_workflow: Optional[List[str]] = None
+    agent_events: List[Dict[str, Any]] = []
+    artifact: Optional[Dict[str, Any]] = None
 
 class OrchestratorPlanRequest(BaseModel):
     prompt: str
@@ -266,7 +272,7 @@ class A2AValidateResponse(BaseModel):
 # POST /orchestrator/run — main orchestration endpoint
 # ─────────────────────────────────────────────────────────────
 @orchestrator_router.post("/run", response_model=OrchestratorResponse)
-async def run_orchestrator(req: OrchestratorRequest, db=Depends(get_db)):
+async def run_orchestrator(req: OrchestratorRequest, current_user: UserModel = Depends(get_current_user), db=Depends(get_db)):
     # 1. Resolve slash-command → inject skill + build suggested workflow
     slash_skill = parse_slash_command(req.prompt)
     active_skills = list(req.skills)
@@ -313,25 +319,9 @@ async def run_orchestrator(req: OrchestratorRequest, db=Depends(get_db)):
             suggested_workflow=suggested_workflow,
         )
 
-    # 3. LangGraph + Gemini (when available and key is set)
-    if LANGGRAPH_AVAILABLE and settings.GEMINI_API_KEY:
-        state: PipelineState = {
-            "messages": req.messages if req.messages else [{"role": "user", "content": req.prompt}],
-            "current_stage": req.current_stage,
-            "skills": active_skills,
-            "schema_context": req.schema_context,
-            "output": "",
-        }
-        agent_fn = make_agent_node(req.current_stage)
-        result_state = await agent_fn(state)
-        return OrchestratorResponse(
-            reply=result_state["output"],
-            stage=req.current_stage,
-            source="langgraph-gemini",
-            suggested_workflow=suggested_workflow,
-        )
-
-    raise HTTPException(status_code=503, detail="AI Orchestration is unavailable. Check API keys and LangGraph installation.")
+    # 3. Master/sub-agent runtime uses the configured OpenAI-compatible provider, not optional Gemini imports.
+    result = await run_chat_orchestration(db, str(current_user.id), {**req.model_dump(), "skills": active_skills})
+    return OrchestratorResponse(**{**result, "suggested_workflow": suggested_workflow})
 
 def _skill_from_prompt(prompt: str) -> str:
     slash = parse_slash_command(prompt)

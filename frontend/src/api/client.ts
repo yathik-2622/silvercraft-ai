@@ -49,7 +49,8 @@ export const authApi = {
 // ─── Projects ────────────────────────────────────────────────
 export const projectsApi = {
   list: () => apiClient.get('/projects/'),
-  create: (name: string, description?: string) => apiClient.post('/projects/', { name, description }),
+  grouped: () => apiClient.get('/projects/grouped'),
+  create: (data: { name: string; description?: string; domain?: string; sub_domain?: string; layer?: 'foundation' | 'product'; execution_flow?: 'custom'; workflow_mode?: 'orchestrator'; collaborators?: string[] }) => apiClient.post('/projects/', data),
   get: (id: string) => apiClient.get(`/projects/${id}`),
   update: (id: string, data: object) => apiClient.put(`/projects/${id}`, data),
   delete: (id: string) => apiClient.delete(`/projects/${id}`),
@@ -97,6 +98,18 @@ export const workflowsApi = {
   update: (id: string, steps: object[]) => apiClient.put(`/workflows/${id}`, steps),
 };
 
+// Chat-first modeling workspace persistence.
+export const sessionsApi = {
+  createChat: (projectId: string, title: string, workflowId?: string) => apiClient.post(`/projects/${projectId}/chats`, { title, workflow_id: workflowId }),
+  listChats: (projectId: string) => apiClient.get(`/projects/${projectId}/chats`),
+  getChat: (chatId: string) => apiClient.get(`/chats/${chatId}`),
+  appendMessage: (chatId: string, data: object) => apiClient.post(`/chats/${chatId}/messages`, data),
+  renameChat: (chatId: string, title: string) => apiClient.put(`/chats/${chatId}`, { title }),
+  deleteChat: (chatId: string) => apiClient.delete(`/chats/${chatId}`),
+  listAgentRuns: (projectId: string) => apiClient.get(`/projects/${projectId}/agent-runs`),
+  decideHitl: (workflowId: string, gateId: string, data: object) => apiClient.post(`/workflows/${workflowId}/hitl/${gateId}`, data),
+};
+
 // ─── Orchestrator ────────────────────────────────────────────
 export const orchestratorApi = {
   run: (data: {
@@ -107,6 +120,9 @@ export const orchestratorApi = {
     schema_context?: object;
     messages?: object[];
     remote_agent_uri?: string;
+    project_id?: string;
+    workflow_id?: string;
+    chat_id?: string;
   }) => apiClient.post('/orchestrator/run', data),
 
   injectSkill: (agent_id: string, skill_key: string, action?: string) =>
