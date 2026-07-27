@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { FolderKanban, Layers, LogOut, Pencil, Plus, Settings, Share2, Trash2, Users, X } from 'lucide-react';
+import { FolderKanban, Layers, LogOut, Pencil, Plus, Settings, Share2, Trash2, Users, X, Sparkles, Database } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { projectsApi, settingsApi } from '../api/client';
 import { useAuthStore } from '../store/useAuthStore';
 
@@ -9,6 +10,7 @@ const initialForm = { name: '', domain: '', sub_domain: '', description: '', lay
 
 export const DashboardPage: React.FC = () => {
   const { user, logout } = useAuthStore();
+  const navigate = useNavigate();
   const [owned, setOwned] = useState<Project[]>([]); const [shared, setShared] = useState<Project[]>([]);
   const [section, setSection] = useState<'owned' | 'shared'>('owned'); const [showProject, setShowProject] = useState(false); const [showSettings, setShowSettings] = useState(false);
   const [form, setForm] = useState(initialForm); const [editing, setEditing] = useState<Project | null>(null); const [provider, setProvider] = useState({ provider: 'platform', base_url: '', default_model: 'gpt-4o', api_key: '' });
@@ -22,9 +24,201 @@ export const DashboardPage: React.FC = () => {
   const openSettings = async () => { try { const response = await settingsApi.get(); setProvider({ provider: response.data.settings.provider ?? 'platform', base_url: response.data.settings.base_url ?? '', default_model: response.data.settings.default_model ?? 'gpt-4o', api_key: '' }); setShowSettings(true); } catch { setError('Unable to load LLM settings.'); } };
   const saveSettings = async (event: React.FormEvent) => { event.preventDefault(); try { await settingsApi.update(provider); setShowSettings(false); } catch (e: any) { setError(e.response?.data?.detail || 'Unable to save LLM settings.'); } };
   const current = section === 'owned' ? owned : shared;
-  return <div className="min-h-screen bg-slate-50 text-slate-900"><header className="sticky top-0 z-10 border-b border-slate-200 bg-white/90 backdrop-blur"><div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-5"><div className="flex items-center gap-3"><div className="grid h-9 w-9 place-items-center rounded-xl bg-[#e67225] shadow-md shadow-orange-200"><Layers className="h-5 w-5 text-white" /></div><div><div className="text-sm font-black">SilverCraft AI</div><div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Modeling workspace</div></div></div><div className="flex items-center gap-2"><button onClick={() => void openSettings()} className="rounded-xl border border-slate-200 p-2 text-slate-500 transition hover:border-orange-200 hover:bg-orange-50 hover:text-[#c95411]" title="LLM settings"><Settings className="h-4 w-4" /></button><span className="hidden text-xs font-bold text-slate-600 sm:block">{user?.full_name || user?.email}</span><button onClick={logout} className="rounded-xl p-2 text-slate-500 hover:bg-slate-100" title="Sign out"><LogOut className="h-4 w-4" /></button></div></div></header><main className="mx-auto max-w-7xl px-5 py-10"><div className="flex flex-wrap items-end justify-between gap-5"><div><p className="text-xs font-black uppercase tracking-[0.18em] text-[#e67225]">Projects</p><h1 className="mt-2 text-3xl font-black tracking-tight">Your modeling workspaces</h1><p className="mt-2 text-sm text-slate-500">Create a project, then model entirely from a chat-first studio.</p></div><button onClick={openCreate} className="inline-flex items-center gap-2 rounded-xl bg-[#e67225] px-4 py-3 text-sm font-black text-white shadow-lg shadow-orange-200 transition hover:-translate-y-0.5 hover:bg-[#cf5e19]"><Plus className="h-4 w-4" /> New project</button></div><div className="mt-8 flex w-fit rounded-xl border border-slate-200 bg-white p-1"><button onClick={() => setSection('owned')} className={`rounded-lg px-4 py-2 text-xs font-black transition ${section === 'owned' ? 'bg-slate-900 text-white shadow-sm' : 'text-slate-500 hover:bg-slate-50'}`}><FolderKanban className="mr-1.5 inline h-3.5 w-3.5" /> My projects ({owned.length})</button><button onClick={() => setSection('shared')} className={`rounded-lg px-4 py-2 text-xs font-black transition ${section === 'shared' ? 'bg-slate-900 text-white shadow-sm' : 'text-slate-500 hover:bg-slate-50'}`}><Share2 className="mr-1.5 inline h-3.5 w-3.5" /> Shared projects ({shared.length})</button></div><div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{current.map((project) => <article key={project.id} onClick={() => location.assign(`/project/${project.id}/studio`)} className="group cursor-pointer rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition duration-200 hover:-translate-y-1 hover:border-orange-200 hover:shadow-xl hover:shadow-orange-100/50"><div className="flex items-start justify-between gap-3"><div className="grid h-9 w-9 place-items-center rounded-xl bg-orange-50"><FolderKanban className="h-4 w-4 text-[#e67225]" /></div><div className="flex items-center gap-1"><span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-black capitalize text-slate-600">{project.layer || 'foundation'} layer</span>{section === 'owned' && <><button onClick={(event) => { event.stopPropagation(); editProject(project); }} className="rounded-lg p-1.5 text-slate-400 hover:bg-orange-50 hover:text-[#c95411]" title="Edit project"><Pencil className="h-3.5 w-3.5" /></button><button onClick={(event) => { event.stopPropagation(); void deleteProject(project); }} className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title="Delete project"><Trash2 className="h-3.5 w-3.5" /></button></>}</div></div><h2 className="mt-5 text-base font-black">{project.name}</h2><p className="mt-1.5 min-h-10 text-xs leading-5 text-slate-500">{project.description || 'No description yet.'}</p><div className="mt-4 border-t border-slate-100 pt-3 text-[11px] font-bold text-slate-500">{project.domain || 'Domain'}{project.sub_domain ? ` / ${project.sub_domain}` : ''}</div></article>)}{current.length === 0 && <div className="col-span-full rounded-2xl border border-dashed border-slate-300 bg-white p-12 text-center text-sm text-slate-500">{section === 'owned' ? 'Create your first project to start modeling.' : 'No projects have been shared with you yet.'}</div>}</div></main>
-    {showProject && <div className="fixed inset-0 z-30 grid place-items-center bg-slate-950/45 p-4"><form onSubmit={saveProject} className="w-full max-w-lg rounded-2xl bg-white shadow-2xl"><div className="flex items-center justify-between border-b border-slate-100 px-5 py-4"><div><h2 className="text-sm font-black">{editing ? 'Edit project' : 'New project'}</h2><p className="mt-1 text-[11px] text-slate-500">Only the project context needed to start modeling.</p></div><button type="button" onClick={() => setShowProject(false)}><X className="h-4 w-4 text-slate-400" /></button></div><div className="grid gap-3 p-5"><input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Project name" className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm" /><div className="grid grid-cols-2 gap-3"><input required value={form.domain} onChange={(e) => setForm({ ...form, domain: e.target.value })} placeholder="Domain" className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm" /><input required value={form.sub_domain} onChange={(e) => setForm({ ...form, sub_domain: e.target.value })} placeholder="Subdomain" className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm" /></div><textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Description (optional)" className="min-h-20 rounded-xl border border-slate-200 px-3 py-2.5 text-sm" /><select value={form.layer} onChange={(e) => setForm({ ...form, layer: e.target.value as Layer })} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm"><option value="foundation">Foundation layer</option><option value="product">Product layer</option></select><div className="flex gap-2"><input value={form.member} onChange={(e) => setForm({ ...form, member: e.target.value })} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); const value = form.member.trim().toLowerCase(); if (value && !form.members.includes(value)) setForm({ ...form, member: '', members: [...form.members, value] }); } }} placeholder="Team member email" className="min-w-0 flex-1 rounded-xl border border-slate-200 px-3 py-2.5 text-sm" /><button type="button" onClick={() => { const value = form.member.trim().toLowerCase(); if (value && !form.members.includes(value)) setForm({ ...form, member: '', members: [...form.members, value] }); }} className="rounded-xl border border-slate-200 px-3 text-xs font-bold"><Users className="inline h-3.5 w-3.5" /> Add</button></div>{form.members.length > 0 && <div className="flex flex-wrap gap-1">{form.members.map((email) => <span key={email} className="rounded-full bg-orange-50 px-2 py-1 text-[10px] font-bold text-[#a94712]">{email} <button type="button" onClick={() => setForm({ ...form, members: form.members.filter((value) => value !== email) })}>×</button></span>)}</div>}</div><div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-4"><button type="button" onClick={() => setShowProject(false)} className="px-3 py-2 text-xs font-bold text-slate-500">Cancel</button><button disabled={saving} className="rounded-lg bg-[#e67225] px-4 py-2 text-xs font-black text-white disabled:opacity-50">{saving ? 'Saving…' : editing ? 'Save changes' : 'Create and open chat'}</button></div></form></div>}
-    {showSettings && <div className="fixed inset-0 z-30 grid place-items-center bg-slate-950/45 p-4"><form onSubmit={saveSettings} className="w-full max-w-md rounded-2xl bg-white shadow-2xl"><div className="flex items-center justify-between border-b border-slate-100 px-5 py-4"><div><h2 className="text-sm font-black">LLM provider settings</h2><p className="mt-1 text-[11px] text-slate-500">Platform provider uses backend environment values by default.</p></div><button type="button" onClick={() => setShowSettings(false)}><X className="h-4 w-4 text-slate-400" /></button></div><div className="grid gap-3 p-5"><select value={provider.provider} onChange={(e) => setProvider({ ...provider, provider: e.target.value, api_key: '' })} className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm"><option value="platform">Platform provider (default)</option><option value="openai">OpenAI override</option><option value="openrouter">OpenRouter override</option><option value="groq">Groq override</option><option value="nvidia">NVIDIA override</option><option value="custom">Custom override</option></select><input required value={provider.default_model} onChange={(e) => setProvider({ ...provider, default_model: e.target.value })} placeholder="Model name" className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm" />{provider.provider !== 'platform' && <><input value={provider.base_url} onChange={(e) => setProvider({ ...provider, base_url: e.target.value })} placeholder="Base URL (custom only)" className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm" /><input type="password" required value={provider.api_key} onChange={(e) => setProvider({ ...provider, api_key: e.target.value })} placeholder="Your provider API key" className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm" /></>}</div><div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-4"><button type="button" onClick={() => setShowSettings(false)} className="px-3 py-2 text-xs font-bold text-slate-500">Cancel</button><button className="rounded-lg bg-[#e67225] px-4 py-2 text-xs font-black text-white">Save provider</button></div></form></div>}
-    {error && <div className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-xl bg-rose-700 px-4 py-2 text-xs font-bold text-white">{error}</div>}
-  </div>;
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-800 font-sans selection:bg-[#e67225]/30">
+      {/* Background ambient glow */}
+      <div className="fixed inset-0 z-0 overflow-hidden pointer-events-none">
+        <div className="absolute top-[-20%] left-[-10%] w-[50%] h-[50%] rounded-full bg-[#e67225]/10 blur-[120px]" />
+        <div className="absolute bottom-[-20%] right-[-10%] w-[50%] h-[50%] rounded-full bg-blue-500/10 blur-[120px]" />
+      </div>
+
+      <header className="sticky top-0 z-10 border-b border-slate-200 bg-white/80 backdrop-blur-xl">
+        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6">
+          <div className="flex items-center gap-3">
+            <div className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-[#e67225] to-[#c95411] shadow-[0_0_20px_rgba(230,114,37,0.3)]">
+              <Layers className="h-5 w-5 text-white" />
+            </div>
+            <div>
+              <div className="text-sm font-bold tracking-tight text-slate-900">SilverCraft AI</div>
+              <div className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">Modeling Workspace</div>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <button onClick={() => void openSettings()} className="rounded-full p-2.5 text-slate-500 transition hover:bg-slate-100 hover:text-slate-900" title="LLM settings">
+              <Settings className="h-4 w-4" />
+            </button>
+            <div className="h-4 w-px bg-slate-200" />
+            <span className="hidden text-xs font-medium text-slate-600 sm:block">{user?.full_name || user?.email}</span>
+            <button onClick={logout} className="rounded-full p-2.5 text-slate-500 transition hover:bg-slate-100 hover:text-slate-900" title="Sign out">
+              <LogOut className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <main className="relative z-10 mx-auto max-w-7xl px-6 py-12">
+        <div className="flex flex-wrap items-end justify-between gap-6">
+          <div>
+            <div className="inline-flex items-center gap-2 rounded-full border border-[#e67225]/30 bg-[#e67225]/10 px-3 py-1 text-[10px] font-bold uppercase tracking-widest text-[#e67225]">
+              <Sparkles className="h-3 w-3" /> Projects
+            </div>
+            <h1 className="mt-4 text-4xl font-extrabold tracking-tight text-slate-900 sm:text-5xl">Your Workspaces</h1>
+            <p className="mt-3 max-w-xl text-sm leading-relaxed text-slate-600">
+              Create a project, define your domain, and build data models entirely from a chat-first AI studio.
+            </p>
+          </div>
+          <button onClick={openCreate} className="group relative inline-flex items-center gap-2 overflow-hidden rounded-full bg-slate-900 px-6 py-3 text-sm font-bold text-white shadow-[0_0_40px_rgba(0,0,0,0.1)] transition hover:scale-105 hover:shadow-[0_0_40px_rgba(0,0,0,0.2)]">
+            <Plus className="h-4 w-4 transition group-hover:rotate-90" /> New Project
+          </button>
+        </div>
+
+        <div className="mt-12 flex w-fit rounded-full border border-slate-200 bg-white p-1 shadow-sm backdrop-blur-md">
+          <button onClick={() => setSection('owned')} className={`rounded-full px-5 py-2 text-xs font-bold transition ${section === 'owned' ? 'bg-slate-100 text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-900'}`}>
+            <FolderKanban className="mr-2 inline h-3.5 w-3.5" /> My projects ({owned.length})
+          </button>
+          <button onClick={() => setSection('shared')} className={`rounded-full px-5 py-2 text-xs font-bold transition ${section === 'shared' ? 'bg-slate-100 text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-900'}`}>
+            <Share2 className="mr-2 inline h-3.5 w-3.5" /> Shared ({shared.length})
+          </button>
+        </div>
+
+        <div className="mt-8 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+          {current.map((project) => (
+            <article key={project.id} onClick={() => navigate(`/project/${project.id}/studio`)} className="group cursor-pointer rounded-3xl border border-slate-200 bg-white p-6 shadow-sm transition duration-300 hover:-translate-y-1.5 hover:border-slate-300 hover:shadow-xl">
+              <div className="flex items-start justify-between gap-3">
+                <div className="grid h-10 w-10 place-items-center rounded-2xl bg-orange-100 text-orange-600 transition group-hover:bg-[#e67225] group-hover:text-white group-hover:shadow-[0_0_15px_rgba(230,114,37,0.4)]">
+                  <Database className="h-4 w-4" />
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] font-bold capitalize text-slate-600">
+                    {project.layer || 'foundation'}
+                  </span>
+                  {section === 'owned' && (
+                    <>
+                      <button onClick={(event) => { event.stopPropagation(); editProject(project); }} className="rounded-full p-1.5 text-slate-400 opacity-0 transition hover:bg-slate-100 hover:text-slate-900 group-hover:opacity-100" title="Edit project">
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
+                      <button onClick={(event) => { event.stopPropagation(); void deleteProject(project); }} className="rounded-full p-1.5 text-slate-400 opacity-0 transition hover:bg-rose-100 hover:text-rose-600 group-hover:opacity-100" title="Delete project">
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+              <h2 className="mt-5 text-lg font-bold text-slate-900">{project.name}</h2>
+              <p className="mt-2 min-h-[2.5rem] text-xs leading-relaxed text-slate-500 line-clamp-2">
+                {project.description || 'No description provided.'}
+              </p>
+              <div className="mt-5 flex items-center gap-2 border-t border-slate-100 pt-4 text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                <span>{project.domain || 'Domain'}</span>
+                {project.sub_domain && (
+                  <>
+                    <span className="h-1 w-1 rounded-full bg-slate-600" />
+                    <span>{project.sub_domain}</span>
+                  </>
+                )}
+              </div>
+            </article>
+          ))}
+          {current.length === 0 && (
+            <div className="col-span-full rounded-3xl border border-dashed border-slate-300 bg-white p-16 text-center shadow-sm">
+              <div className="mx-auto grid h-12 w-12 place-items-center rounded-full bg-slate-50">
+                <FolderKanban className="h-5 w-5 text-slate-400" />
+              </div>
+              <p className="mt-4 text-sm font-medium text-slate-500">
+                {section === 'owned' ? 'No workspaces found. Create your first project to get started.' : 'No projects have been shared with you yet.'}
+              </p>
+            </div>
+          )}
+        </div>
+      </main>
+
+      {/* Modals with updated dark UI */}
+      {showProject && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-900/50 p-4 backdrop-blur-sm">
+          <form onSubmit={saveProject} className="w-full max-w-lg rounded-3xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-100 px-6 py-5">
+              <div>
+                <h2 className="text-base font-bold text-slate-900">{editing ? 'Edit Workspace' : 'New Workspace'}</h2>
+                <p className="mt-1 text-xs text-slate-500">Define the boundary for your data model.</p>
+              </div>
+              <button type="button" onClick={() => setShowProject(false)} className="rounded-full p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-900"><X className="h-4 w-4" /></button>
+            </div>
+            <div className="grid gap-4 p-6">
+              <input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Project name" className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 placeholder-slate-400 outline-none focus:border-[#e67225]/50 focus:bg-white focus:ring-4 focus:ring-[#e67225]/10" />
+              <div className="grid grid-cols-2 gap-4">
+                <input required value={form.domain} onChange={(e) => setForm({ ...form, domain: e.target.value })} placeholder="Domain (e.g., Sales)" className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 placeholder-slate-400 outline-none focus:border-[#e67225]/50 focus:bg-white focus:ring-4 focus:ring-[#e67225]/10" />
+                <input required value={form.sub_domain} onChange={(e) => setForm({ ...form, sub_domain: e.target.value })} placeholder="Subdomain (e.g., Retail)" className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 placeholder-slate-400 outline-none focus:border-[#e67225]/50 focus:bg-white focus:ring-4 focus:ring-[#e67225]/10" />
+              </div>
+              <textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Description (optional)" className="min-h-[100px] resize-none rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 placeholder-slate-400 outline-none focus:border-[#e67225]/50 focus:bg-white focus:ring-4 focus:ring-[#e67225]/10" />
+              <select value={form.layer} onChange={(e) => setForm({ ...form, layer: e.target.value as Layer })} className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none focus:border-[#e67225]/50 focus:bg-white focus:ring-4 focus:ring-[#e67225]/10">
+                <option value="foundation">Foundation Layer</option>
+                <option value="product">Product Layer</option>
+              </select>
+              <div className="flex gap-2">
+                <input value={form.member} onChange={(e) => setForm({ ...form, member: e.target.value })} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); const value = form.member.trim().toLowerCase(); if (value && !form.members.includes(value)) setForm({ ...form, member: '', members: [...form.members, value] }); } }} placeholder="Invite collaborator email..." className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 placeholder-slate-400 outline-none focus:border-[#e67225]/50 focus:bg-white focus:ring-4 focus:ring-[#e67225]/10" />
+                <button type="button" onClick={() => { const value = form.member.trim().toLowerCase(); if (value && !form.members.includes(value)) setForm({ ...form, member: '', members: [...form.members, value] }); }} className="rounded-xl bg-slate-100 border border-slate-200 px-4 text-xs font-bold text-slate-700 hover:bg-slate-200 transition"><Users className="mr-1.5 inline h-4 w-4" /> Add</button>
+              </div>
+              {form.members.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {form.members.map((email) => (
+                    <span key={email} className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-600">
+                      {email} <button type="button" onClick={() => setForm({ ...form, members: form.members.filter((value) => value !== email) })} className="text-slate-400 hover:text-slate-900"><X className="h-3 w-3" /></button>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="flex justify-end gap-3 border-t border-slate-100 bg-slate-50 px-6 py-4 rounded-b-3xl">
+              <button type="button" onClick={() => setShowProject(false)} className="rounded-full px-4 py-2 text-xs font-bold text-slate-500 hover:text-slate-900 transition">Cancel</button>
+              <button disabled={saving} className="rounded-full bg-slate-900 px-6 py-2 text-xs font-bold text-white transition hover:scale-105 disabled:opacity-50">
+                {saving ? 'Saving...' : editing ? 'Save Changes' : 'Create Workspace'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {showSettings && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-900/50 p-4 backdrop-blur-sm">
+          <form onSubmit={saveSettings} className="w-full max-w-md rounded-3xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-100 px-6 py-5">
+              <div>
+                <h2 className="text-base font-bold text-slate-900">LLM Provider Settings</h2>
+                <p className="mt-1 text-xs text-slate-500">Configure your model environment.</p>
+              </div>
+              <button type="button" onClick={() => setShowSettings(false)} className="rounded-full p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-900"><X className="h-4 w-4" /></button>
+            </div>
+            <div className="grid gap-4 p-6">
+              <select value={provider.provider} onChange={(e) => setProvider({ ...provider, provider: e.target.value, api_key: '' })} className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none focus:border-[#e67225]/50 focus:bg-white focus:ring-4 focus:ring-[#e67225]/10">
+                <option value="platform">Platform Provider (Default)</option>
+                <option value="openai">OpenAI Override</option>
+                <option value="openrouter">OpenRouter Override</option>
+                <option value="groq">Groq Override</option>
+                <option value="nvidia">NVIDIA Override</option>
+                <option value="custom">Custom Override</option>
+              </select>
+              <input required value={provider.default_model} onChange={(e) => setProvider({ ...provider, default_model: e.target.value })} placeholder="Default Model (e.g. gpt-4o)" className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 placeholder-slate-400 outline-none focus:border-[#e67225]/50 focus:bg-white focus:ring-4 focus:ring-[#e67225]/10" />
+              {provider.provider !== 'platform' && (
+                <>
+                  <input value={provider.base_url} onChange={(e) => setProvider({ ...provider, base_url: e.target.value })} placeholder="Base URL (custom only)" className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 placeholder-slate-400 outline-none focus:border-[#e67225]/50 focus:bg-white focus:ring-4 focus:ring-[#e67225]/10" />
+                  <input type="password" required value={provider.api_key} onChange={(e) => setProvider({ ...provider, api_key: e.target.value })} placeholder="API Key" className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 placeholder-slate-400 outline-none focus:border-[#e67225]/50 focus:bg-white focus:ring-4 focus:ring-[#e67225]/10" />
+                </>
+              )}
+            </div>
+            <div className="flex justify-end gap-3 border-t border-slate-100 bg-slate-50 px-6 py-4 rounded-b-3xl">
+              <button type="button" onClick={() => setShowSettings(false)} className="rounded-full px-4 py-2 text-xs font-bold text-slate-500 hover:text-slate-900 transition">Cancel</button>
+              <button className="rounded-full bg-slate-900 px-6 py-2 text-xs font-bold text-white transition hover:scale-105">Save Provider</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {error && (
+        <div className="fixed bottom-6 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-full border border-rose-500/30 bg-rose-950/90 px-5 py-2.5 text-xs font-bold text-rose-200 shadow-[0_10px_40px_rgba(225,29,72,0.3)] backdrop-blur-md">
+          {error}
+          <button onClick={() => setError('')} className="rounded-full p-1 hover:bg-rose-900"><X className="h-3 w-3" /></button>
+        </div>
+      )}
+    </div>
+  );
 };

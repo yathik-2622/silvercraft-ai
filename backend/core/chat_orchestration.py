@@ -125,6 +125,12 @@ async def _resolve_skill_markdown(db, user_id: str, names: list[str]) -> str:
     return "\n\n".join(f"# {item['name']}\n{item.get('description', '')}\n{item.get('content', '')}" for item in skills)
 
 
+async def _generate_chat_title(runtime: dict, user_prompt: str) -> str:
+    """Use the orchestrator model to title a conversation by intent, not raw text."""
+    title = await _chat_completion(runtime, "Create only a concise 3-7 word chat title based on the user's intent. No quotes, punctuation, or explanation.", user_prompt)
+    return " ".join(title.replace("\n", " ").strip(" .:-").split()[:7]) or "Modeling conversation"
+
+
 async def run_chat_orchestration(db, user_id: str, request: dict[str, Any]) -> dict[str, Any]:
     """Run a LangGraph supervisor -> specialist handoff and persist its A2A audit trail."""
     if not MODELING_GRAPH:
@@ -132,18 +138,21 @@ async def run_chat_orchestration(db, user_id: str, request: dict[str, Any]) -> d
     stage = request.get("current_stage") or "1-source-analysis"
     agent_name, agent_instruction = STAGE_AGENTS.get(stage, STAGE_AGENTS["1-source-analysis"])
     runtime = await resolve_llm_runtime(db, user_id)
+    if request.get("model_name"):
+        runtime["default_model"] = str(request["model_name"]).strip()
     run_id = str(uuid4())
     skills_markdown = await _resolve_skill_markdown(db, user_id, request.get("skills") or [])
     started = datetime.utcnow()
     state = await MODELING_GRAPH.ainvoke({"runtime": runtime, "stage": stage, "agent_name": agent_name, "agent_instruction": agent_instruction, "user_prompt": request.get("prompt", ""), "project_context": request.get("schema_context") or {}, "skills_markdown": skills_markdown})
     completed = datetime.utcnow()
     output = state["output"]
+    chat_title = await _generate_chat_title(runtime, request.get("prompt", "")) if request.get("generate_chat_title") else None
     if state.get("response_mode") == "chat":
         event = {"run_id": run_id, "agent_name": "master-orchestrator", "stage": stage, "framework": "langgraph", "status": "completed", "started_at": started, "completed_at": completed, "summary": output[:500]}
-        return {"reply": output, "stage": stage, "source": "langgraph-supervisor", "agent_events": [event], "artifact": None}
+        return {"reply": output, "stage": stage, "source": "langgraph-supervisor", "agent_events": [event], "artifact": None, "chat_title": chat_title}
     await db["a2a_messages"].insert_one({"run_id": run_id, "project_id": request.get("project_id"), "workflow_id": request.get("workflow_id"), "from_agent": "master-orchestrator", "to_agent": agent_name, "message_type": "delegation", "payload": {"stage": stage, "prompt": request.get("prompt", "")}, "created_at": started})
     await db["a2a_messages"].insert_one({"run_id": run_id, "project_id": request.get("project_id"), "workflow_id": request.get("workflow_id"), "from_agent": agent_name, "to_agent": "master-orchestrator", "message_type": "result", "payload": {"stage": stage, "output": output}, "created_at": completed})
     event = {"run_id": run_id, "agent_name": agent_name, "stage": stage, "framework": "langgraph", "status": "completed", "started_at": started, "completed_at": completed, "summary": output[:500]}
     if request.get("project_id") or request.get("workflow_id"):
         await db["agent_runs"].insert_one({**event, "project_id": request.get("project_id"), "workflow_id": request.get("workflow_id"), "chat_id": request.get("chat_id"), "created_by": user_id, "master_brief": state["master_brief"], "output": output, "skills": request.get("skills") or []})
-    return {"reply": output, "stage": stage, "source": "langgraph-supervisor", "agent_events": [event], "artifact": {"title": agent_name, "stage": stage, "content": output, "requires_hitl": True}}
+    return {"reply": output, "stage": stage, "source": "langgraph-supervisor", "agent_events": [event], "artifact": {"title": agent_name, "stage": stage, "content": output, "requires_hitl": True}, "chat_title": chat_title}

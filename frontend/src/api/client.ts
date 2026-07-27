@@ -2,7 +2,7 @@ import axios from 'axios';
 import { useAuthStore } from '../store/useAuthStore';
 
 // Use Vite environment variable or fallback directly to local FastAPI server
-const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080/api/v1';
+const BASE_URL = (import.meta as any).env.VITE_API_URL || 'http://localhost:8080/api/v1';
 
 export const apiClient = axios.create({
   baseURL: BASE_URL,
@@ -108,9 +108,29 @@ export const sessionsApi = {
   deleteChat: (chatId: string) => apiClient.delete(`/chats/${chatId}`),
   listAgentRuns: (projectId: string) => apiClient.get(`/projects/${projectId}/agent-runs`),
   decideHitl: (workflowId: string, gateId: string, data: object) => apiClient.post(`/workflows/${workflowId}/hitl/${gateId}`, data),
+
+  // Per-chat attachment persistence
+  attachFile: (chatId: string, fileId: string, filename: string, contentType?: string, size?: number) =>
+    apiClient.post(`/chats/${chatId}/attachments`, { file_id: fileId, filename, content_type: contentType || 'application/octet-stream', size: size || 0 }),
+  listAttachments: (chatId: string) => apiClient.get(`/chats/${chatId}/attachments`),
+  removeAttachment: (chatId: string, fileId: string) => apiClient.delete(`/chats/${chatId}/attachments/${fileId}`),
+
+  // Per-chat preferences (model selection, etc.)
+  updatePreferences: (chatId: string, prefs: { model_name?: string }) => apiClient.patch(`/chats/${chatId}/preferences`, prefs),
 };
 
-// ─── Orchestrator ────────────────────────────────────────────
+// ─── Canvas Artifacts ────────────────────────────────────────────
+export const artifactsApi = {
+  create: (chatId: string, data: { title: string; stage: string; content: string; status?: string; agent_name?: string }) =>
+    apiClient.post(`/chats/${chatId}/artifacts`, { chat_id: chatId, ...data }),
+  list: (chatId: string) => apiClient.get(`/chats/${chatId}/artifacts`),
+  update: (artifactId: string, content: string) => apiClient.put(`/artifacts/${artifactId}`, { content }),
+  updateStatus: (artifactId: string, status: 'approved' | 'rejected', comment?: string) =>
+    apiClient.put(`/artifacts/${artifactId}/status`, { status, comment: comment || '' }),
+  delete: (artifactId: string) => apiClient.delete(`/artifacts/${artifactId}`),
+};
+
+// ─── Orchestrator ────────────────────────────────────────────────
 export const orchestratorApi = {
   run: (data: {
     prompt: string;

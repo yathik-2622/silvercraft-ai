@@ -1,0 +1,6 @@
+customer_id,first_name,last_name,email,phone,address,city,country,registration_date,loyalty_tier
+CUST-1001,John,Doe,john.doe@example.com,+1-555-0100,123 Maple St,New York,USA,2023-01-15,Gold
+CUST-1002,Jane,Smith,jane.smith@example.com,+1-555-0101,456 Oak Ave,Los Angeles,USA,2023-02-20,Silver
+CUST-1003,Robert,Johnson,r.johnson@example.com,+44-7700-900100,789 Pine Rd,London,UK,2023-03-05,Bronze
+CUST-1004,Emily,Davis,emily.d@example.com,+1-555-0102,321 Elm St,Chicago,USA,2023-04-10,Gold
+CUST-1005,Michael,Brown,michael.b@example.com,+61-400-000-000,654 Cedar Ln,Sydney,Australia,2023-05-12,Silver

@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from config import settings
 from database import connect_to_mongo, close_mongo_connection
-from api.routes import a2a, auth, mcp, projects, skills, agents, workflows, settings as settings_routes, sessions
+from api.routes import a2a, artifacts, auth, mcp, projects, skills, agents, workflows, settings as settings_routes, sessions
 from orchestrator import orchestrator_router
 
 app = FastAPI(
@@ -34,6 +34,7 @@ app.include_router(agents.router,       prefix=f"{settings.API_V1_STR}/agents", 
 app.include_router(workflows.router,    prefix=f"{settings.API_V1_STR}/workflows",    tags=["Workflows"])
 app.include_router(settings_routes.router, prefix=f"{settings.API_V1_STR}/settings", tags=["Settings"])
 app.include_router(sessions.router, prefix=f"{settings.API_V1_STR}", tags=["Modeling Sessions"])
+app.include_router(artifacts.router, prefix=f"{settings.API_V1_STR}", tags=["Artifacts"])
 app.include_router(a2a.router, prefix=f"{settings.API_V1_STR}/a2a", tags=["A2A"])
 app.include_router(mcp.router, prefix=f"{settings.API_V1_STR}/mcp", tags=["MCP"])
 app.include_router(orchestrator_router, prefix=f"{settings.API_V1_STR}/orchestrator", tags=["Orchestrator"])

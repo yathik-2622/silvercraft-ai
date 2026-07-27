@@ -235,6 +235,7 @@ class OrchestratorRequest(BaseModel):
     project_id: Optional[str] = None
     workflow_id: Optional[str] = None
     chat_id: Optional[str] = None
+    model_name: Optional[str] = None
 
 class OrchestratorResponse(BaseModel):
     reply: str
@@ -243,6 +244,7 @@ class OrchestratorResponse(BaseModel):
     suggested_workflow: Optional[List[str]] = None
     agent_events: List[Dict[str, Any]] = []
     artifact: Optional[Dict[str, Any]] = None
+    chat_title: Optional[str] = None
 
 class OrchestratorPlanRequest(BaseModel):
     prompt: str
@@ -320,7 +322,21 @@ async def run_orchestrator(req: OrchestratorRequest, current_user: UserModel = D
         )
 
     # 3. Master/sub-agent runtime uses the configured OpenAI-compatible provider, not optional Gemini imports.
-    result = await run_chat_orchestration(db, str(current_user.id), {**req.model_dump(), "skills": active_skills})
+    chat = None
+    if req.chat_id:
+        try:
+            from bson import ObjectId
+            chat = await db["chats"].find_one({"_id": ObjectId(req.chat_id)})
+        except Exception:
+            chat = None
+    should_title = bool(chat and chat.get("created_by") == str(current_user.id) and chat.get("title") in {"Modeling conversation", "New modeling conversation"})
+    result = await run_chat_orchestration(db, str(current_user.id), {**req.model_dump(), "skills": active_skills, "generate_chat_title": should_title})
+    if chat and result.get("chat_title"):
+        try:
+            if chat.get("created_by") == str(current_user.id):
+                await db["chats"].update_one({"_id": chat["_id"]}, {"$set": {"title": result["chat_title"]}})
+        except Exception:
+            pass
     return OrchestratorResponse(**{**result, "suggested_workflow": suggested_workflow})
 
 def _skill_from_prompt(prompt: str) -> str:

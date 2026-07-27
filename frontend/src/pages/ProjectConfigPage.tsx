@@ -122,7 +122,7 @@ export const ProjectConfigPage: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [planning, setPlanning] = useState(false);
   const [error, setError] = useState('');
-  const [canvasTheme, setCanvasTheme] = useState<'dark' | 'light'>('dark');
+  const [canvasTheme, setCanvasTheme] = useState<'dark' | 'light'>('light');
   const [isCreateAgentOpen, setIsCreateAgentOpen] = useState(false);
   const [isCreateSkillOpen, setIsCreateSkillOpen] = useState(false);
   const [newSkill, setNewSkill] = useState({ name: '', description: '', content: '', files: [] as File[] });

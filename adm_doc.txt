@@ -1,0 +1,286 @@
+**ADM SILVER LAYERFOUNDATION LAYER DOCUMENTATION**
+**ADM SILVER LAYER – FOUNDATION LAYER DOCUMENTATION**  
+*(Read‑only analysis – no code changes made)*
+
+The Foundation Layer in `ADM_SILVER_LAYER` consists of **4 sequential stages**, each responsible for a specific phase of the data modeling lifecycle. Each stage is broken down into discrete steps that are executed via a combination of UI-driven workflows, backend agents (Azure Functions/LangGraph), and persistent session state. Below is a detailed breakdown of each stage, its steps, purpose, implementation approach, and the problem it solves.
+
+---
+
+## 📊 Overview
+| Stage | Name | Steps | Primary Goal |
+|-------|------|-------|--------------|
+| 1 | Source Analysis | 7 | Profile, enrich, and understand raw source data |
+| 2 | Conceptual Modeling | 2 | Derive high‑level business concepts and relationships |
+| 3 | Logical Modeling | 10 | Convert conceptual model to a detailed logical schema (entities, attributes, keys, SCD, relationships) |
+| 4 | Physical Modeling | 6 | Transform logical model into a deployable physical design (surrogate keys, naming, transformations, STTM, DDL/DML, artifacts) |
+
+Total stages: **4**  
+Total steps across all stages: **25**
+
+---
+
+## 🔍 Stage‑by‑Stage Details
+
+### **1️⃣ Stage 1 – Source Analysis**  
+*Files:* `Stage1_SourceAnalysis.tsx`, `stage1/VerticalWorkflow.tsx`, modals in `stage1/modals/`  
+*Steps (7):*  
+
+| Step | What it Does | Why It Exists (Problem Solved) | How It’s Built |
+|------|--------------|-------------------------------|----------------|
+| **1. Import Source** | Configures the input source (files, database tables, metastore) and captures basic metadata (file names, types, table names). | Ensures the workflow starts with a well‑defined, traceable data source; prevents silent failures due to missing/inaccessible inputs. | UI form (`ConfigureInputDataSource` modal) → persistent state (`agentic_dm_stage1_configuredSource`, `sourceType`, `tableName`, etc.) → triggers downstream profiling. |
+| **2. Profile** | Executes the **profile‑data** agent to compute column‑level statistics (row count, data types, distinct values, null %, min/max, etc.). | Provides the quantitative foundation for data quality assessment, downstream classification, and key detection. | Calls `/api/v1/agents/profile-data/execute` → Azure Function → WebPubSub for real‑time logs → stores results in `agentic_dm_profiledResults`. |
+| **3. Enhance Data Dictionary** | Runs the **data‑dictionary** agent to enrich attributes with business descriptions (optional file‑based enrichment also supported). | Adds human‑readable context to raw technical metadata, making the model usable by business stakeholders. | Triggers `data-dictionary`/`enrich-data-dictionary` agents → merges output into `analysisResult.entities[].attributes[].description`. |
+| **4. Recommend Data Classification** | Invokes the **recommend‑data‑classification** agent to tag attributes with sensitivity labels (PII, confidential, internal, etc.) and source classification (AI‑suggested). | Automates compliance‑relevant tagging, reducing manual effort and ensuring consistent handling of sensitive data. | Uses `recommend-data-classification` agent → populates `dataClassification` and `dataSensitivity` fields on attributes. |
+| **5. Identify Domain** | Executes the **entity‑data‑domain‑recommender** agent to assign each entity to a business domain (e.g., Customer, Product, Finance). | Enables domain‑driven organization of entities, supporting future data mesh / domain‑oriented architectures. | Calls `entity-data-domain-recommender` → stores domain per entity in `analysisResult.entities[].domain`. |
+| **6. Identify Primary Keys** | Runs a pipeline: **attribute‑domain** → **candidate‑key** → **primary‑key** agents to detect and recommend primary key columns per entity. | Establishes unambiguous record identifiers, essential for entity integrity and relationship mapping. | Orchestrates three agents sequentially; persists primary key lists and justifications in `analysisResult.entities[].primaryKey` and `primaryKeyJustification`. |
+| **7. Identify Relationships** | Executes the **relationship‑identifier** agent to discover foreign key‑style relationships between entities (one‑to‑many, many‑to‑many, etc.). | Captures the natural associations that will later be modeled as logical/physical relationships. | Calls `relationship-identifier` → converts API output to `Relationship[]` → stored in `analysisResult.relationships`. |
+
+**How the stage is built overall:**  
+- UI driven by a vertical workflow (`VerticalWorkflow`) with step‑wise enablement based on completion.  
+- Each step triggers a specific backend agent via `/api/v1/agents/<agent-name>/execute`.  
+- Agents run as Azure Functions, communicate progress via WebPubSub, and write results to the Postgres metastore (`dfl_agent_input`, `dfl_adm_session`).  
+- UI modals (e.g., `ProfileResultView`, `GeneratedDataDictionaryView`, `ClassificationResultView`) allow review and confirmation before advancing.  
+- State is managed via `usePersistentState` hooks (localStorage‑backed) to survive refreshes and enable HITL (Human‑In‑The‑Loop) validation.
+
+---
+
+### **2️⃣ Stage 2 – Conceptual Modeling**  
+*Files:* `Stage2_ConceptualModeling.tsx`, `stage2/modals/`  
+*Steps (2):*  
+
+| Step | What it Does | Why It Exists | How It’s Built |
+|------|--------------|---------------|----------------|
+| **1. Generate Concepts** | Uses the **generate‑conceptual‑model** agent to derive high‑level business concepts (entities) from the source analysis, optionally incorporating key attributes. | Abstracts away raw technical details to focus on core business nouns (e.g., Customer, Order, Product). | Calls `/api/v1/agents/generate-conceptual-model/execute` → WebPubSub → extracts `conceptname`, `justification`, `sourceentity` → stored as `ConceptualEntity[]`. |
+| **2. Generate Relationships** | Runs the **entity‑relationship‑recommender** agent to propose relationships between the confirmed concepts. | Captures how business concepts interact (e.g., Customer places Order), forming the backbone of the conceptual model. | Requires confirmed concepts as input → calls `/api/v1/agents/entity‑relationship‑recommender/execute` → transforms output to `Relationship[]` → stored in `conceptualModel.relationships`. |
+
+**How the stage is built:**  
+- Simple two‑step workflow with modal‑driven review for each step (`ConceptResultView`, `RelationshipResultView`).  
+- Agents are Azure Functions that consume the source analysis (or confirmed concepts) and emit structured JSON.  
+- UI allows editing of concept names, justifications, and source entity mappings before confirmation.  
+- Confirmed concepts and relationships are saved to session state (`agentic_dm_stage2_confirmedConceptTableOutput`, `entityRelationshipsOutput`) and propagated to the next stage.  
+- The stage uses a “generate‑then‑confirm” HITL pattern to ensure business correctness before moving to logical modeling.
+
+---
+
+### **3️⃣ Stage 3 – Logical Modeling**  
+*Files:* `Stage3_LogicalModeling.tsx`, `stage3/modals/`, `stage3/utils/importedEnterpriseModel.ts`, `stage3/temp/modelingrules.ts`  
+*Steps (10):*  
+
+| Step | What it Does | Why It Exists | How It’s Built |
+|------|--------------|---------------|----------------|
+| **1. Modeling Type Selection** | Chooses between normalization strategies (Normalized, Semi‑Normalized, Non‑Normalized) for the logical model. | Aligns the logical design with business requirements (e.g., reporting vs. transactional systems) and controls redundancy. | UI toggle (`useKeyAttributes` checkbox) → persisted as `agentic_dm_stage2_useKeyAttributes` (actually from stage2, but conceptually similar); influences subsequent attribute generation. |
+| **2. LDM Standardize Names** | Executes the **logicalstandardname** agent to apply consistent naming conventions to logical entities and attributes (e.g., camelCase, PascalCase). | Ensures readability, reduces ambiguity, and supports downstream tooling that expects standard identifiers. | Calls `/api/v1/agents/logicalstandardname/execute` → stores results in `agentic_dm_stage3_logicalStandardizedNames`. |
+| **3. Identify Entities** | Uses the **entity‑role‑recommender** agent to classify each entity as a FACT (transactional) or DIMENSION (master) entity. | Fundamental for dimensional modeling; determines how entities will be stored and joined (e.g., fact tables vs. dimension tables). | Calls `entity-role-recommender` agent → populates `scdType` (`N/A` for FACT, `Type 2` for DIMENSION by default) on `LogicalEntity`. |
+| **4. Map Attributes** | Runs the **map‑attributes** agent to connect source attributes (from profiling/dictionary) to logical entities, suggesting data types, domains, and source mappings. | Bridges the gap between raw source fields and the cleaned logical model, enforcing semantic consistency. | Calls `map-attributes` agent → outputs `MapAttribute[]` → converted to `LogicalAttribute[]` (name, dataType, description, sourceMapping, domain). |
+| **5. Classify Entities** | (Note: This step appears to overlap with “Identify Entities” in the current codebase; it may represent a broader classification step such as assigning entity subtypes or business categories. In practice, the “Identify Entities” step already performs FACT/DIMENSION classification.) | Ensures entities are correctly typed for downstream processing (e.g., distinguishing between transactional, reference, or audit tables). | Likely uses the same `entity-role-recommender` output; confirmed via UI in `IdentifyEntitiesView`/`ReviewScdTypesView`. |
+| **6. Identify Keys** | Executes the **candidate‑key** and **primary‑key** agents (in sequence) to detect unique identifiers and designate primary keys for each logical entity. | Guarantees row‑level uniqueness in the logical model, which is essential for relationship integrity and surrogate key decisions later. | Orchestrates `candidate-key` → `primary-key` agents → updates `LogicalEntity.primaryKey` and `primaryKeyJustification`. |
+| **7. Review SCD Types** | Presents the **Slowly Changing Type** (SCD) recommendations (from the Identify Entities step) for user review and confirmation; allows overriding defaults (e.g., forcing Type 2 on a dimension). | Captures historical tracking requirements correctly; ensures that dimensions meant to retain history are modeled as SCD Type 2. | Reads confirmed SCD state from session (or `entity-role-recommender` output) → UI in `ReviewScdTypesView` lets user adjust `scdType` per entity → persists to `logicalModel.entities[].scdType`. |
+| **8. Map to Existing Model** | Enables mapping of the current logical model to an existing enterprise data model (via file import or metastore lookup) to promote reuse and consistency. | Leverages prior investments, avoids remodel­ing of standard entities, and ensures enterprise‑wide alignment. | Uploaded file parsed by `parseImportedEnterpriseModelFile` → matched against logical entities → UI in `MapToExistingModelView` allows confirmation of matches. |
+| **9. Generate Relationships** | Runs the **entity‑relationship‑recommender** agent (logical variant) to propose foreign key relationships between logical entities based on mapped attributes and keys. | Defines how entities relate to one another (e.g., Order.customerKey → Customer.customerKey), forming the relational schema. | Calls `entity‑relationship‑recommender` (with `step_name: "logical"`) → transforms output to `Relationship[]` → stored in `logicalModel.relationships`. |
+| **10. Resolve M:N Relations** | Provides a UI‑driven workflow to break down many‑to‑many relationships into associative tables (with optional payload attributes). | Many‑to‑many relationships cannot be directly represented in most relational databases; this step ensures physical implementability. | Manual UI in `ResolveMnRelationView` → user specifies junction table name and attributes → updates `logicalModel.entities` and `logicalModel.relationships` accordingly. |
+
+**How the stage is built:**  
+- A detailed vertical workflow with 10 steps, each guarded by completion flags (`isIdentifyEntitiesComplete`, `isMapAttributesComplete`, etc.).  
+- Each step invokes one or more backend agents (e.g., `entity-role-recommender`, `map-attributes`, `candidate-key`, `primary-key`, `logicalstandardname`, `entity-relationship-recommender`).  
+- Agents are Azure Functions that read/write the metastore (`dfl_agent_input`, `dfl_adm_session`) and stream logs via WebPubSub.  
+- UI modals (`IdentifyEntitiesView`, `MapAttributesView`, `IdentifyKeysView`, `ReviewScdTypesView`, `MapToExistingModelView`, `GenerateRelationshipsView`, `ResolveMnRelationView`) allow inspection, editing, and confirmation of agent outputs.  
+- State is persisted using `usePersistentState` hooks (keys like `agentic_dm_stage3_mapAttributes`, `agentic_dm_stage3_isMapAttributesConfirmed`, etc.) to enable HITL and recovery from interruptions.  
+- The stage enforces a strict dependency order (e.g., you cannot generate relationships until keys are identified and entities are mapped) via the `currentSubStepIndex` guard.
+
+---
+
+### **4️⃣ Stage 4 – Physical Modeling**  
+*Files:* `Stage4_PhysicalModeling.tsx`, `stage4/GenerateSurrogateKeysView.tsx`, `stage4/StandardizeNamesView.tsx`, `stage4/GenerateSttmView.tsx`, `stage4/GenerateDdlDmlView.tsx`  
+*Steps (6):*  
+
+| Step | What it Does | Why It Exists | How It’s Built |
+|------|--------------|---------------|----------------|
+| **1. Generate Surrogate Keys** | Determines whether surrogate keys are needed (mandatory for SCD Type 2 entities, optional otherwise), presents a draft plan, and lets the user review/confirm key names and data types (INT/BIGINT). | Surrogate keys provide a stable, immutable primary key for dimensional tables, insulating the model from business key changes and enabling accurate historical tracking. | **Assess‑then‑plan‑then‑confirm** HITL flow via `/api/v1/agents/surrogate-key/execute` (phase=`assess`/`plan`) and `/api/v1/agents/surrogate-key/confirm` agent. Uses `SurrogateKeyGeneratorAgent` (LangGraph) to evaluate SCD state, business keys, and relationships. Confirmed results are merged into the logical model as surrogate key attributes (`is_surrogate_key=true`, `surrogate_key_name`, `surrogate_key_type`) and persisted as the new active session state for downstream steps. |
+| **2. Standardize Names** | Executes the **standardname** agent to apply naming conventions to physical entities and attributes (e.g., removing spaces, converting to uppercase, applying prefixes/suffixes). | Ensures physical identifiers comply with target database naming rules (length, case sensitivity, reserved words) and promotes consistency across generated artifacts. | Calls `/api/v1/agents/standardname/execute` → outputs `standardname[]` (physicalEntityName, standardizedName, standardizedDataType, etc.) → reconstructed into a `LogicalModel` with standardized names and data types. |
+| **3. Apply Transformations** | Allows the user to select or define cleansing/transformation expressions (e.g., `TRIM()`, `UPPER()`, `CAST AS DATE`) for each attribute via a template library or custom text. | Applies data quality and formatting rules early in the physical model so that generated DDL/DML reflects clean, ready‑to‑load data. | UI‑driven (no dedicated agent): templates stored in `TRANSFORMATION_TEMPLATES` constant; user selections saved in `transformationRules` (`Record<string, Record<string, string>>` keyed by `entityName|attributeName`). These expressions are later embedded in the STTM and DDL generation steps. |
+| **4. Generate STTM** | Runs the **sttm‑generator** agent to produce a Source‑to‑Target Mapping matrix that maps each logical attribute (after standardization and transformation) to a physical column, including data type, nullability, primary key flags, and SCD Type 2 markers. | Creates the authoritative blueprint for how the logical model will be physically instantiated in a database, bridging design and implementation. | Calls `/api/v1/agents/sttm-generator/execute` → outputs `SttmRow[]` (source/target entity/attribute, mapping expression, data type, `isPk`, `isScdType2`, etc.) → stored in `agentic_dm_stage4_sttm_v2`. |
+| **5. Generate DDL & DML** | Executes the **ddl‑dml‑generator** agent to produce: <br> • **DDL**: `CREATE TABLE` statements (with columns, data types, primary keys, foreign keys, etc.) <br> • **DML**: `INSERT INTO` statements (or merge scripts) for initial data load, if applicable. | Transforms the approved physical design into executable database scripts that can be deployed to a target SQL‑based system (e.g., Snowflake, SQL Server, PostgreSQL). | Calls `/api/v1/agents/ddl-dml-generator/execute` → outputs `Record<string, string>` for DDL (`ddl_map`) and DML (`dml_map`) → stored in `agentic_dm_stage4_ddl_map` and `agentic_dm_stage4_dml_map`. |
+| **6. Download Artifacts** | Provides a UI to download the generated artifacts as files (SQL scripts, Excel workbooks containing STTM, etc.). | Enables delivery of the final design to DBAs, developers, or CI/CD pipelines for actual database creation and data loading. | Client‑side generation using libraries like `xlsx` (for Excel) and `Blob` APIs; formats include `.sql`, `.xlsx`, `.csv`. No backend agent needed—artifacts are constructed from the confirmed session state (standardized model, STTM, DDL/DML). |
+
+**How the stage is built overall:**  
+- A linear six‑step workflow with modal‑driven review for each step (`GenerateSurrogateKeysView`, `StandardizeNamesView`, `GenerateSttmView`, `GenerateDdlDmlView`).  
+- Surrogate key step uses a **three‑phase** HITL model (assess → plan → confirm) because it mutates the authoritative physical design; the other steps use a simpler **generate → confirm** pattern.  
+- All agent executions are orchestrated via the API layer (`apis-azure`) which builds agent input from the current session state, triggers Azure Functions, and handles WebPubSub negotiation for real‑time progress.  
+- The agent layer (`adm-foundation-layer-agents-azure`) contains the actual LangGraph‑based agents (e.g., `SurrogateKeyGeneratorAgent`) that perform deterministic rule‑based processing.  
+- Confirmed outputs from each step are written back to the metastore (`dfl_adm_session`) as the new active session version, ensuring that downstream steps always consume the latest verified design.  
+- The stage makes heavy use of `usePersistentState` hooks to preserve intermediate state (e.g., `surrogateKeyPlans`, `surrogateKeyAssessment`, `isStandardizeNamesConfirmed`, `transformationRules`) across navigations and refreshes.
+
+---
+
+## 🧩 Summary
+- The Foundation Layer is a **four‑stage, twenty‑five‑step** pipeline that takes raw source data through profiling, conceptualization, logical detailing, and physical design generation.  
+- Each stage is **modular**, with clearly defined steps that are implemented as combinations of **UI workflows**, **backend agents (Azure Functions/LangGraph)**, and **persistent session state**.  
+- The design emphasizes **Human‑In‑The‑Loop (HITL)** validation at critical junctures (especially where mutations to the authoritative model occur, such as surrogate key assignment and naming standardization) to ensure correctness and traceability.  
+- Agents are **decoupled and reusable**; each step invokes a specific agent that performs a narrowly scoped, deterministic function (e.g., profile‑data, map‑attributes, standardname, sttm‑generator).  
+- State flows strictly forward: the output of one stage becomes the input of the next, with the ability to revisit prior steps for correction before final confirmation.  
+- The ultimate goal is to produce a **verified, deployable physical model** (DDL/DML, STTM, artifacts) that accurately reflects the source data’s semantics while adhering to best practices for dimensional modeling, naming conventions, and data quality.
+
+This layered, step‑wise approach ensures that complex data modeling tasks are broken into manageable, reviewable increments, reducing errors and increasing collaboration between technical and business stakeholders. No code was modified or altered during this analysis.
+
+# ADM GOLD LAYER – PRODUCT LAYER DOCUMENTATION
+# ADM GOLD LAYER – PRODUCT LAYER DOCUMENTATION  
+*(Read-only analysis – no code changes made)*
+
+The Product Layer in `ADM_GOLD_LAYER` consists of **4 sequential stages**, each responsible for a specific phase of the KPI/data product modeling lifecycle. Each stage is broken down into discrete steps that are executed via a combination of UI-driven workflows, backend agents (Azure Functions), and persistent session state. Below is a detailed breakdown of each stage, its steps, purpose, implementation approach, and the problem it solves.
+
+---
+
+## 📊 Overview
+| Stage | Name | Steps | Primary Goal |
+|-------|------|-------|--------------|
+| 1 | Silver Insights | 1 | Configure source connections (Bronze/Silver layers or Foundation Layer metastore) |
+| 2 | KPI Discovery | 6 | Discover and finalize KPIs via chat/file upload, then define functional area, business process, use case, and grain |
+| 3 | KPI Finalization | 6 | Segregate base/calculated KPIs, map to source entities, generate calculations, draft logical model, identify primary keys, define relationships |
+| 4 | Physical Modeling | 5 | Standardize names, generate STTM, create DDL/DML, finalize KPI SQL logic, download artifacts |
+
+Total stages: **4**  
+Total steps across all stages: **18**
+
+---
+
+## 🔍 Stage‑by‑Stage Details
+
+### **1️⃣ Stage 1 – Silver Insights**  
+*Files:* `Stage1_SilverInsights.tsx`, `stage1/Vertical_flow_stage1.tsx`, modals in `stage1/modals/`  
+*Step (1):*  
+
+| Step | What it Does | Why It Exists (Problem Solved) | How It’s Built |
+|------|--------------|-------------------------------|----------------|
+| **Source Connections** | Allows users to configure data source connections: <br> • **Bronze layer**: File uploads <br> • **Silver layer**: File uploads <br> • **Foundation Layer metastore**: Connect to existing Silver tables from the Foundation Layer | Establishes the input data foundation for KPI modeling; supports multiple entry points (raw files, processed Silver tables, or Foundation Layer outputs) to enable flexible data ingestion | UI with three connection buttons (Bronze, Silver, Metastore) → triggers `/product/v1/agents/silver-insights/execute` agent → normalizes table metadata via `normalizeUploadedTables()` → persists to `product_dm_silverModel` in localStorage → passes table data to next stage via `onComplete` callback |
+
+**How the stage is built overall:**  
+- Single-step workflow with modal-driven file upload (`BronzeSilverFileUploadModal`) and metastore preview  
+- Agent processes source type (file/metastore) and layer (bronze/silver) parameters  
+- Returns normalized table structure with columns, data types, descriptions, and primary key indicators  
+- Uses `usePersistentState` hooks to maintain session state across navigations  
+- Implements proper error handling and loading states for file uploads and metastore connections  
+
+---
+
+### **2️⃣ Stage 2 – KPI Discovery**  
+*Files:* `Stage2_KPIDiscovery.tsx`, `stage2/Vertical_flow_stage2.tsx`, modals in `stage2/modals/`  
+*Steps (6):*  
+
+| Step | What it Does | Why It Exists | How It’s Built |
+|------|--------------|---------------|----------------|
+| **1. Discover KPIs** | Lets users discover KPI candidates via: <br> • **Chat**: AI conversation to identify KPIs <br> • **Meastro File**: Upload predefined KPI templates <br> • **KPI Source File**: Upload KPIs with source mappings | Provides flexible KPI discovery methods to accommodate different user preferences and data sources; chat enables exploratory discovery while file uploads support structured inputs | Modal with discovery method selection → triggers `/product/v1/agents/kpi-discovery` agent → processes uploaded files or chat input → returns KPI definitions with name, definition, formula, dimensions, and granularity → persists to `product_dm_stage2_finalized_kpis` |
+| **2. Finalise KPI** | Reviews and confirms the discovered KPIs before progressing to downstream steps | Ensures KPI definitions are accurate and complete before investing effort in mapping and calculations; prevents propagating errors through the pipeline | Modal (`FinaliseKpiModal`) shows KPIs in editable table → user can add/edit/delete KPIs → confirmed KPIs trigger completion of this step and progression to Functional Area (for chat/meastro flows) or remain in this step for file upload flows |
+| **3. Identify Functional Area** | Assigns KPIs to specific business functional areas (e.g., Sales, Finance, HR) | Organizes KPIs by business function for better governance, reporting, and organizational alignment; enables function-specific KPI dashboards | Modal (`IdentifyFunctionalAreaModal`) presents dropdown of functional areas per KPI → user selects area (with custom option) → confirmed assignments persist and advance to Business Process step |
+| **4. Identify Business Process** | Aligns KPIs to the business processes they support (e.g., Order-to-Cash, Record-to-Report) | Connects KPIs to operational workflows for meaningful performance measurement; ensures KPIs reflect actual business activities rather than isolated metrics | Modal (`IdentifyBusinessProcessModal`) presents business process options per KPI → user selects process → confirmed alignments persist and advance to Use Case step |
+| **5. Identify Use Case** | Links KPIs to specific business use cases (e.g., Customer Segmentation, Fraud Detection) | Provides contextual relevance for KPIs; enables targeted analysis and decision-making based on specific business scenarios | Modal (`IdentifyUsecaseModal`) presents use case options per KPI → user selects use case → confirmed links persist and advance to Grain Identification step |
+| **6. Identify Grain** | Defines the aggregation grain for KPIs (e.g., Daily, Monthly, Region, Product) | Establishes the temporal and dimensional granularity at which KPIs are measured; critical for correct aggregation and trend analysis | Modal (`IdentifyGrainModal`) presents grain options (typically predefined like "Region") → user confirms grain → final step completion triggers `onComplete` callback with finalized KPIs |
+
+**How the stage is built overall:**  
+- Six-step vertical workflow with conditional step visibility based on discovery method (chat/meastro vs file upload)  
+- Each step uses dedicated modals for user interaction and confirmation  
+- Agents are triggered for KPI discovery (file upload paths) while chat path uses direct AI interaction  
+- State persistence via `usePersistentState` hooks for: <br> • Discovery method (`product_dm_stage2_discoveryMethod`) <br> • Completed steps (`product_dm_stage2_completedSteps`) <br> • Active step (`product_dm_stage2_activeStep`) <br> • Finalized KPIs (`product_dm_stage2_finalized_kpis`) <br> • Grain data persistence (`product_dm_stage2_grain_candidates`, `product_dm_stage2_grain_selections`)  
+- Sophisticated step dependency logic: file upload flows require manual completion of all steps, while chat/meastro flows auto-complete downstream steps after KPI finalization  
+- WebSocket integration for real-time agent progress logging during file-based agent execution  
+- Downstream reset capability via `onResetDownstream` callback when new KPIs are discovered  
+
+---
+
+### **3️⃣ Stage 3 – KPI Finalization**  
+*Files:* `Stage3_KPIFinalising.tsx`, `stage3/Vertical_flow_stage3.tsx`, modals in `stage3/modals/`  
+*Steps (6):*  
+
+| Step | What it Does | Why It Exists | How It’s Built |
+|------|--------------|---------------|----------------|
+| **1. Find Base and Calculated KPIs** | Segregates KPIs into base (directly measurable) vs calculated (derived from formulas) | Enables appropriate handling of different KPI types; base KPIs map directly to source data while calculated KPIs require formula generation and validation | Modal (`BaseCalcKpiModal`) presents KPIs in two columns → user drags KPIs between base/calculated categories → confirmed segregation persists and enables progression to Entity Mapping |
+| **2. Map Source Entities and Attributes** | Aligns KPIs with Silver/source entities and their attributes | Establishes the lineage between business KPIs and underlying data sources; critical for accurate formula generation and impact analysis | Modal (`EntityMappingModal`) shows KPIs with mapping controls → user maps each KPI to source entities and attributes → confirmed mappings enable progression to Calculations step |
+| **3. Generate Calculations** | Defines precise calculation logic for calculated KPIs | Transforms business KPI definitions into executable SQL/calculation logic; ensures consistency and correctness of derived metrics | Modal (`CalculationsModal`) provides formula editor per calculated KPI → user defines calculations using source attributes → confirmed calculations enable progression to Logical Model step |
+| **4. Review Entities & Attributes** | Drafts the logical schema for KPIs (entities and attributes) | Creates the conceptual foundation for the physical model; defines what entities and attributes will exist in the final product layer | Modal (`LogicalModelModal`) presents draft logical model → user reviews entity/attribute structure → confirmed model enables progression to Primary Key Identification |
+| **5. Identify Primary Keys** | Identifies primary keys for logical entities | Ensures row-level uniqueness in the logical model, which is essential for relationship integrity and surrogate key decisions | Modal (`IdentifyPrimaryKeysModal`) presents entities with key selection controls → user identifies primary keys per entity → confirmed keys enable progression to Relationships step |
+| **6. Generate Relationships** | Defines aggregate table relationships between logical entities | Captures how KPI entities relate to one another (e.g., sales aggregated by customer and time); enables proper schema design for analytical workloads | Modal (`RelationshipsModal`) defines relationships between entities → user specifies relationship type and details → confirmed relationships trigger final completion and advance to Physical Modeling stage |
+
+**How the stage is built overall:**  
+- Six-step sequential workflow with modal-driven interaction for each step  
+- Each step validates completion before enabling the next step via `completedSteps` state tracking  
+- State persistence via `usePersistentState` hooks for: <br> • Completed steps (`product_dm_stage3_completedSteps`) <br> • Selected stage (`product_dm_stage3_selectedStage`) <br> • Results (`product_dm_stage3_stageResults`) <br> • Run status (`product_dm_stage3_runStatus`) <br> • Finalized KPIs (`product_dm_stage3_finalizedSteps`)  
+- Sophisticated activation logic: users can only access steps after completing prerequisite steps  
+- Each modal confirms completion via `completeStep()` function which updates state and activates next step  
+- Final step (Relationships) triggers `onComplete` callback with stage results to advance to Physical Modeling  
+- Uses `useEffect` hooks to initialize state from props when no persisted data exists (first visit)  
+- Implements proper cleanup logic to prevent state corruption when navigating between stages  
+
+---
+
+### **4️⃣ Stage 4 – Physical Modeling**  
+*Files:* `Stage4_PHysicalModeling.tsx`, `stage4/Vertical_flow_stage4.tsx`, modals in `stage4/modals/`  
+*Steps (5):*  
+
+| Step | What it Does | Why It Exists | How It’s Built |
+|------|--------------|---------------|----------------|
+| **1. Standardize Names** | Applies naming conventions to tables and columns (e.g., `Sales_Agg` → `FCT_SALES_AGG`) | Ensures physical identifiers comply with target database naming rules (length, case sensitivity, reserved words) and promotes consistency across generated artifacts | Modal (`StandardizeNamesView`) shows original vs standardized names in comparison table → user reviews and confirms standardization → confirmed names persist and enable progression to STTM generation (with special logic allowing skip of STTM step) |
+| **2. Generate STTM** | Creates source-to-target mapping document showing lineage from source to target | Documents how logical attributes map to physical columns including transformations, data types, and SCD Type 2 markers; essential for ETL development and data lineage tracking | Modal (`GenerateSttmView`) triggers `/product/v1/agents/sttm-generator/execute` agent → returns `SttmRow[]` with mapping details → user can edit mappings and select target entity → confirmed STTM enables progression to DDL/DML generation |
+| **3. Generate DDL and DMLs** | Creates physical schema and loading scripts (`CREATE TABLE`, `INSERT` statements) | Transforms the approved physical design into executable database scripts for deployment to target systems (e.g., Databricks, Snowflake, SQL Server) | Modal (`GenerateDdlDmlView`) triggers `/product/v1/agents/sqlgenerator/execute` agent → returns DDL/DML scripts per entity → user can select entity to view scripts → confirmed scripts enable progression to KPI Logic finalization |
+| **4. Finalise KPIs** | Generates and validates KPI SQL logic for implementation | Produces executable SQL logic for each KPI that can be deployed to the target environment; ensures KPIs are correctly calculated from source data | Modal (`GenerateKpiLogicView`) triggers `/product/v1/agents/kpigenerator/execute` agent → returns KPI SQL logic catalog → user reviews and confirms logic → confirmed KPIs enable progression to Artifacts Download |
+| **5. Download Artifacts** | Exports all generated models and scripts for deployment | Provides deliverable artifacts to DBAs, developers, or CI/CD pipelines for actual database creation and KPI implementation | Modal (`DownloadArtifactsView`) shows list of available artifacts (SQL scripts, JSON definitions, reports) → user confirms download readiness → final completion of Product Layer workflow |
+
+**How the stage is built overall:**  
+- Five-step sequential workflow with special dependency rules: <br> • DDL/DML step can be accessed after Standardize Names (skipping STTM if needed) <br> • KPI Logic step requires DDL/DML completion <br> • Download step is final and requires all prior steps |  
+- Modal-driven interaction for each step with dedicated views: <br> • `StandardizeNamesView` <br> • `GenerateSttmView` <br> • `GenerateDdlDmlView` <br> • `GenerateKpiLogicView` <br> • `DownloadArtifactsView` |  
+- Agent execution follows consistent pattern: <br> 1. Trigger agent via `/product/v1/agents/<agent-name>/execute` <br> 2. Connect to WebPubSub for real-time progress logging <br> 3. Fetch results via `/product/v1/agents/get_agent_execution_result` <br> 4. Transform and persist results to session state |  
+- State persistence via `usePersistentState` hooks for: <br> • Completed steps (`product_dm_stage4_completedSteps`) <br> • Active step (`product_dm_stage4_activeStep`) <br> • DDL scripts (`product_dm_stage4_ddlScripts`) <br> • DML scripts (`product_dm_stage4_dmlScripts`) <br> • STTM (`product_dm_stage4_sttm`) <br> • Selected entities for DDL/STTM viewing <br> • Standardized names result (`product_dm_stage4_standardizedNamesResult`) <br> • KPI catalog (`product_dm_stage4_kpiCatalog`) <br> • Stage logs (`product_dm_stage4_stageLogs`) <br> • Session ownership tracking (`product_dm_stage4_sessionOwner`) |  
+- Sophisticated step dependency logic with conditional access rules (e.g., DDL/DML accessible after Standardize Names regardless of STTM completion) |  
+- Real-time logging via WebPubSub with stage-specific log accumulation in `stageLogs` state |  
+- Special handling for session ownership to prevent conflicts when multiple users work on same session |  
+- Cleanup functions (`clearStepDataFrom`, `resetProgress`) to manage state when revisiting steps or restarting workflow |  
+- Final completion triggers `onComplete` callback with comprehensive model including KPIs, aggregate tables, logical/physical models, and derivation logic |  
+
+---
+
+## 🔬 Special Features: Surrogate Key Agent in Product Layer
+
+Similar to the Foundation Layer in Silver, the Product Layer includes a **SurrogateKeyAgent** (`adm-product-layer-agents-azure/agents/SurrogateKeyAgent/`) that determines primary key strategies for KPI/aggregate tables. However, this agent serves a different purpose:
+
+### **Product Layer Surrogate Key Agent**
+- **Purpose**: Determines whether to use natural-composite keys or surrogate keys for gold-layer KPI/aggregate tables
+- **Input**: KPI mappings and source table metadata from previous stages
+- **Output**: `SurrogateKeyDecisions` containing:
+  - `table_name`: Gold table name
+  - `table_role`: Fact, dimension, or aggregate
+  - `primary_key_strategy`: "natural-composite" or "surrogate_key"
+  - `primary_key`: Selected business key columns (if natural-composite)
+  - `surrogate_key`: Selected surrogate key name (if surrogate key)
+  - `final_primary_key`: Final selected primary key
+  - `justification`: Business reasoning for the choice
+- **Decision Logic**:
+  - Uses rule-based heuristics to classify table roles (fact/dimension/aggregate)
+  - Identifies key candidates from source table metadata
+  - Evaluates time requirement for keys (essential for SCD Type 2 support)
+  - Leverages LLM (GPT-4o-mini) with structured prompts for complex decisions
+  - Includes robust fallback to surrogate key strategy when LLM output is invalid
+  - Supports user override for manual key selection
+  - Generates deterministic surrogate key names (`<table_name>_sk`)
+- **Key Differences from Foundation Layer Surrogate Key Agent**:
+  - Focuses on KPI/aggregate tables rather than dimensional modeling entities
+  - Determines key strategy rather than generating surrogate key columns
+  - Outputs decisions rather than modifying the logical model directly
+  - Used during KPI finalization stage rather than physical modeling stage
+
+---
+
+## 🧩 Summary
+The Product Layer in `ADM_GOLD_LAYER` is a sophisticated KPI/data product modeling workflow consisting of **4 stages with 18 total steps** that takes users from source configuration through KPI discovery, finalization, and physical implementation. 
+
+Key architectural characteristics:
+1. **Modular Stage Design**: Each stage is a self-contained workflow with clear entry/exit points
+2. **Human-In-The-Loop (HITL) Validation**: Critical decisions require user confirmation before progression
+3. **State Persistence**: Comprehensive use of `usePersistentState` hooks maintains workflow state across navigations and refreshes
+4. **Agent Orchestration**: Backend agents (Azure Functions) handle complex AI/ML operations with real-time progress tracking
+5. **Conditional Workflows**: Different paths based on input method (chat vs file upload) optimize user experience
+6. **Dependency Management**: Sophisticated step activation logic ensures users complete prerequisites before advancing
+7. **Extensibility**: Clear separation of concerns makes it straightforward to add new steps or modify existing ones
+
+The Product Layer complements the Foundation Layer by focusing specifically on KPI/product definition and implementation, while the Foundation Layer handles general data modeling. Together, they form a complete data modeling solution that supports both enterprise data warehousing (Foundation Layer) and specialized KPI/product development (Product Layer).
+
+Total stages across both layers: **8** (4 Foundation + 4 Product)  
+Total steps across both layers: **43** (25 Foundation + 18 Product)  
+

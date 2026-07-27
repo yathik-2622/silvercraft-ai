@@ -66,7 +66,7 @@ async def list_chats(project_id: str, current_user: UserModel = Depends(get_curr
 @router.get("/chats/{chat_id}")
 async def get_chat(chat_id: str, current_user: UserModel = Depends(get_current_user), db=Depends(get_db)):
     chat = await _chat_for_user(chat_id, str(current_user.id), db)
-    return {"id": str(chat["_id"]), "project_id": chat["project_id"], "title": chat["title"], "messages": chat.get("messages", []), "updated_at": chat["updated_at"]}
+    return {"id": str(chat["_id"]), "project_id": chat["project_id"], "title": chat["title"], "messages": chat.get("messages", []), "attachments": chat.get("attachments", []), "preferences": chat.get("preferences", {}), "updated_at": chat["updated_at"]}
 
 
 @router.put("/chats/{chat_id}")
@@ -113,3 +113,67 @@ async def decide_hitl(workflow_id: str, gate_id: str, body: HitlDecision, curren
     decision = {"workflow_id": workflow_id, "project_id": workflow["project_id"], "gate_id": gate_id, **body.model_dump(), "decided_by": str(current_user.id), "decided_at": datetime.utcnow()}
     result = await db["hitl_decisions"].insert_one(decision)
     return {"id": str(result.inserted_id), **decision}
+
+
+# ── Chat Attachments ─────────────────────────────────────────────
+
+
+class AttachmentLink(BaseModel):
+    file_id: str
+    filename: str
+    content_type: str = "application/octet-stream"
+    size: int = 0
+
+
+@router.post("/chats/{chat_id}/attachments", status_code=201)
+async def attach_file_to_chat(chat_id: str, body: AttachmentLink, current_user: UserModel = Depends(get_current_user), db=Depends(get_db)):
+    chat = await _chat_for_user(chat_id, str(current_user.id), db)
+    attachment = {
+        "file_id": body.file_id,
+        "filename": body.filename,
+        "content_type": body.content_type,
+        "size": body.size,
+        "attached_by": str(current_user.id),
+        "attached_at": datetime.utcnow(),
+    }
+    await db["chats"].update_one(
+        {"_id": chat["_id"]},
+        {"$push": {"attachments": attachment}, "$set": {"updated_at": datetime.utcnow()}},
+    )
+    return attachment
+
+
+@router.get("/chats/{chat_id}/attachments")
+async def list_chat_attachments(chat_id: str, current_user: UserModel = Depends(get_current_user), db=Depends(get_db)):
+    chat = await _chat_for_user(chat_id, str(current_user.id), db)
+    return chat.get("attachments", [])
+
+
+@router.delete("/chats/{chat_id}/attachments/{file_id}", status_code=204)
+async def remove_chat_attachment(chat_id: str, file_id: str, current_user: UserModel = Depends(get_current_user), db=Depends(get_db)):
+    chat = await _chat_for_user(chat_id, str(current_user.id), db)
+    await db["chats"].update_one(
+        {"_id": chat["_id"]},
+        {"$pull": {"attachments": {"file_id": file_id}}, "$set": {"updated_at": datetime.utcnow()}},
+    )
+
+
+# ── Per-Chat Preferences (model selection, etc.) ─────────────────
+
+
+class ChatPreferences(BaseModel):
+    model_name: str | None = None
+
+
+@router.patch("/chats/{chat_id}/preferences")
+async def update_chat_preferences(chat_id: str, body: ChatPreferences, current_user: UserModel = Depends(get_current_user), db=Depends(get_db)):
+    chat = await _chat_for_user(chat_id, str(current_user.id), db)
+    prefs = chat.get("preferences", {})
+    if body.model_name is not None:
+        prefs["model_name"] = body.model_name
+    await db["chats"].update_one(
+        {"_id": chat["_id"]},
+        {"$set": {"preferences": prefs, "updated_at": datetime.utcnow()}},
+    )
+    return {"id": chat_id, "preferences": prefs}
+

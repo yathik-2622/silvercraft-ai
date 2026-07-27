@@ -21,9 +21,9 @@ import {
   FileText
 } from "lucide-react";
 import { AgentMarketplaceItem, CustomPipelineStep } from "../types";
-import { PREDEFINED_AGENTS } from "../data/mockData";
 
 interface MarketplaceViewProps {
+  predefinedAgents: AgentMarketplaceItem[];
   customAgents: AgentMarketplaceItem[];
   pipelineSteps: CustomPipelineStep[];
   onAddAgentToPipeline: (agentId: string) => void;
@@ -47,7 +47,7 @@ export const MarketplaceView: React.FC<MarketplaceViewProps> = ({
   const [selectedCategory, setSelectedCategory] = useState<string>("All");
   const [searchQuery, setSearchQuery] = useState<string>("");
 
-  const allAgents = [...PREDEFINED_AGENTS, ...customAgents];
+  const allAgents = [...predefinedAgents, ...customAgents];
 
   const filteredAgents = allAgents.filter((agent) => {
     const matchesCategory = selectedCategory === "All" || agent.category === selectedCategory;

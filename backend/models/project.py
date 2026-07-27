@@ -35,6 +35,7 @@ class ProjectModel(BaseModel):
     llm_base_url: Optional[str] = None
 
     history: List[ProjectHistoryEntry] = []
+    ui_preferences: Dict[str, Any] = {}
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -65,6 +66,7 @@ class ProjectUpdate(BaseModel):
     llm_provider: Optional[str] = None
     llm_api_key: Optional[str] = None
     llm_base_url: Optional[str] = None
+    ui_preferences: Optional[Dict[str, Any]] = None
 
 class ProjectTeamMemberUpdate(BaseModel):
     email: str
@@ -86,5 +88,6 @@ class ProjectResponse(BaseModel):
     naming_rules: str = "snake_case"
     llm_provider: str = "gemini"
     llm_base_url: Optional[str] = None
+    ui_preferences: Dict[str, Any] = {}
     created_at: datetime
     updated_at: datetime

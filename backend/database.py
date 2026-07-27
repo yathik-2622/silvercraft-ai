@@ -19,6 +19,8 @@ async def connect_to_mongo():
     await _db.db["workflows"].create_index([("project_id", 1), ("updated_at", -1)])
     await _db.db["hitl_decisions"].create_index([("workflow_id", 1), ("decided_at", -1)])
     await _db.db["agent_runs"].create_index([("project_id", 1), ("created_at", -1)])
+    await _db.db["artifacts"].create_index([("chat_id", 1), ("created_at", -1)])
+    await _db.db["artifacts"].create_index("project_id")
     print(f"Connected to MongoDB: {settings.MONGODB_DB_NAME}")
 
 async def close_mongo_connection():
