@@ -28,6 +28,10 @@ from api.routes.auth import get_current_user
 from database import get_db
 from middleware.error_handler import ADMException
 from models.user import UserModel
+from core.chat_orchestration import run_chat_orchestration, STAGE_DISPATCH
+from core.logging import get_logger
+
+logger = get_logger(__name__)
 
 router = APIRouter()
 
@@ -301,8 +305,8 @@ async def edit_gate(
     if session.get("project_id"):
         try:
             project = await db["projects"].find_one({"_id": ObjectId(session["project_id"])})
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to load project for role resolution", extra={"session_id": session_id, "error": str(exc)})
     role = _resolve_user_role(session, project, str(current_user.id))
     if role == "viewer":
         raise ADMException("FORBIDDEN_ROLE", "Viewers cannot edit canvas output.")
@@ -359,8 +363,8 @@ async def regenerate_gate(
         try:
             project = await db["projects"].find_one({"_id": ObjectId(session["project_id"])})
             layer = (project or {}).get("layer", "foundation")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to load project for layer resolution", extra={"session_id": session_id, "error": str(exc)})
 
     # Resolve stage from gate + layer
     stage = GATE_STAGES.get(layer, GATE_STAGES["foundation"]).get(gate, gate)
@@ -404,8 +408,22 @@ async def regenerate_gate(
         "decided_at": datetime.utcnow(),
     })
 
-    # TODO Phase 6: enqueue Celery task for actual regeneration
-    # celery_task = dispatch_stage_task.delay(session_id=session_id, gate=gate, steps=steps_to_rerun, directives=body.directives)
+    # Execute regeneration inline using the stage-owner agent
+    runner = STAGE_DISPATCH.get(stage)
+    if runner:
+        try:
+            await runner(
+                session_id=session_id,
+                project_id=session.get("project_id", ""),
+                instruction=f"Regenerate steps: {', '.join(steps_to_rerun)}. Focus only on updating these steps.",
+                context_refs={"steps_to_rerun": steps_to_rerun, "directives": body.directives},
+                directives=body.directives,
+                trace_id=str(uuid4()),
+                db=db,
+            )
+        except Exception as exc:
+            logger.error("Gate regeneration failed", exc_info=True, extra={"gate": gate, "session_id": session_id})
+            raise ADMException("AGENT_TOOL_FAILURE", f"Regeneration failed for gate {gate}: {exc}") from exc
 
     return {
         "status": "regenerating",
@@ -414,7 +432,7 @@ async def regenerate_gate(
         "rerun_mode": rerun_mode,
         "from_step": body.from_step,
         "steps_to_rerun": steps_to_rerun,
-        "message": f"{'Partial' if rerun_mode == 'partial' else 'Full'} regeneration started for gate {gate}.",
+        "message": f"{'Partial' if rerun_mode == 'partial' else 'Full'} regeneration completed for gate {gate}.",
     }
 
 
@@ -445,8 +463,8 @@ async def push_to_metastore(
     if session.get("project_id"):
         try:
             project = await db["projects"].find_one({"_id": ObjectId(session["project_id"])})
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to load project for owner check", extra={"session_id": session_id, "error": str(exc)})
     role = _resolve_user_role(session, project, str(current_user.id))
     if role != "owner":
         raise ADMException("FORBIDDEN_ROLE", "Only the project owner can push to metastore.")
@@ -469,36 +487,54 @@ async def push_to_metastore(
     g4_gate = next((g for g in gates if g.get("gate") == "G4"), None)
     ddl_payload = (g4_gate or {}).get("output_payload", {})
 
-    # ── Enqueue push task (Celery) — TODO Phase 6 for real execution ─────────
-    # For now: record push attempt and return 202
-    push_record = {
-        "session_id": session_id,
-        "project_id": session.get("project_id"),
-        "push_type": "metastore",
-        "pushed_by": str(current_user.id),
-        "ddl_payload": ddl_payload,
-        "status": "queued",
-        "idempotency_key": body.idempotency_key,
-        "created_at": datetime.utcnow(),
-    }
-    result = await db["push_logs"].insert_one(push_record)
+    # Update push record to running and execute inline
+    await db["push_logs"].update_one(
+        {"_id": result.inserted_id},
+        {"$set": {"status": "running", "started_at": datetime.utcnow()}},
+    )
 
-    if body.idempotency_key:
-        await db["idempotency_keys"].insert_one({
-            "key": body.idempotency_key,
-            "action": "push_metastore",
-            "session_id": session_id,
-            "created_at": datetime.utcnow(),
-        })
+    # Execute metastore push inline
+    try:
+        import asyncpg
+        ddl_statements = []
+        tables = ddl_payload.get("physical_tables", [])
+        for table in tables:
+            ddl = table.get("ddl", "")
+            if ddl:
+                ddl_statements.append(ddl)
 
-    # TODO Phase 6: push_metastore_task.delay(push_log_id=str(result.inserted_id))
+        if ddl_statements:
+            conn = await asyncpg.connect(
+                host=settings.POSTGRES_HOST,
+                port=settings.POSTGRES_PORT,
+                user=settings.POSTGRES_USER,
+                password=settings.POSTGRES_PASSWORD,
+                database=settings.POSTGRES_DB,
+                schema=settings.POSTGRES_SCHEMA,
+            )
+            try:
+                for ddl in ddl_statements:
+                    await conn.execute(ddl)
+            finally:
+                await conn.close()
+
+        await db["push_logs"].update_one(
+            {"_id": result.inserted_id},
+            {"$set": {"status": "completed", "completed_at": datetime.utcnow()}},
+        )
+    except Exception as exc:
+        logger.error("Metastore push failed", exc_info=True)
+        await db["push_logs"].update_one(
+            {"_id": result.inserted_id},
+            {"$set": {"status": "error", "error_message": str(exc), "completed_at": datetime.utcnow()}},
+        )
+        raise ADMException("PUSH_FAILED", f"Metastore push failed: {exc}") from exc
 
     return {
-        "status": "queued",
+        "status": "completed",
         "push_log_id": str(result.inserted_id),
         "session_id": session_id,
-        "message": "Metastore push queued. DDL will be executed against PostgreSQL metastore. Check push_log for status.",
-        "note": "Ensure POSTGRES_HOST, POSTGRES_USER, POSTGRES_PASSWORD are set in backend .env",
+        "message": "DDL executed against PostgreSQL metastore successfully.",
     }
 
 
@@ -525,8 +561,8 @@ async def push_to_kg(
     if session.get("project_id"):
         try:
             project = await db["projects"].find_one({"_id": ObjectId(session["project_id"])})
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to load project for owner check", extra={"session_id": session_id, "error": str(exc)})
     role = _resolve_user_role(session, project, str(current_user.id))
     if role != "owner":
         raise ADMException("FORBIDDEN_ROLE", "Only the project owner can push to the knowledge graph.")
@@ -558,14 +594,47 @@ async def push_to_kg(
             "created_at": datetime.utcnow(),
         })
 
-    # TODO Phase 6: push_kg_task.delay(push_log_id=str(result.inserted_id))
+    # Execute KG push inline
+    try:
+        from neo4j import AsyncGraphDatabase
+        driver = AsyncGraphDatabase.driver(
+            settings.NEO4J_URI,
+            auth=(settings.NEO4J_USER, settings.NEO4J_PASSWORD),
+        )
+        try:
+            async with driver.session(database=settings.NEO4J_DATABASE) as session:
+                for gate_name, payload in full_payload.items():
+                    entities = (payload.get("entities") or payload.get("output_payload", {})).get("entities", {})
+                    for entity_name, entity_data in entities.items():
+                        await session.run(
+                            "MERGE (e:Entity {name: $name, session_id: $session_id, gate: $gate}) SET e.data = $data",
+                            name=entity_name,
+                            session_id=session_id,
+                            gate=gate_name,
+                            data=entity_data,
+                        )
+        finally:
+            await driver.close()
+
+        await db["push_logs"].update_one(
+            {"_id": result.inserted_id},
+            {"$set": {"status": "completed", "completed_at": datetime.utcnow()}},
+        )
+    except Exception as exc:
+        logger.error("KG push failed", exc_info=True)
+        await db["push_logs"].update_one(
+            {"_id": result.inserted_id},
+            {"$set": {"status": "error", "error_message": str(exc), "completed_at": datetime.utcnow()}},
+        )
+        if settings.NEO4J_URI and settings.NEO4J_PASSWORD:
+            raise ADMException("PUSH_FAILED", f"Knowledge Graph push failed: {exc}") from exc
+        raise ADMException("PUSH_FAILED", "Knowledge Graph push failed: NEO4J credentials not configured.") from exc
 
     return {
-        "status": "queued",
+        "status": "completed",
         "push_log_id": str(result.inserted_id),
         "session_id": session_id,
-        "message": "Knowledge Graph push queued. adm_silver_kg_v2.py will be invoked as a Celery task.",
-        "note": "Ensure NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD are set in backend .env",
+        "message": "Model pushed to Knowledge Graph successfully.",
     }
 
 

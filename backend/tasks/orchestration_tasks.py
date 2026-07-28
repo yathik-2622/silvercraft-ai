@@ -91,8 +91,8 @@ def dispatch_stage_task(
                 "trace_id": trace_id,
                 "retryable": self.request.retries < self.max_retries,
             }, trace_id))
-        except Exception:
-            pass
+        except Exception as exc2:
+            logger.debug("Failed to emit error trace event during retry", extra={"stage": stage, "trace_id": trace_id})
         raise self.retry(exc=exc)
 
 

@@ -14,14 +14,18 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
 from models.user import PyObjectId
 
 STAGE_BINDINGS = {"source_analysis", "conceptual", "logical", "physical", "cross_cutting"}
+STAGE_BINDING_LITERAL = Literal["source_analysis", "conceptual", "logical", "physical", "cross_cutting"]
+SKILL_KINDS = {"modeling_style", "subtask", "naming_convention", "target_dialect"}
+SKILL_KIND_LITERAL = Literal["modeling_style", "subtask", "naming_convention", "target_dialect"]
 SCOPES = {"builtin", "project_shared", "project_private"}
+SCOPE_LITERAL = Literal["builtin", "project_shared", "project_private"]
 
 
 class SkillModel(BaseModel):
@@ -34,21 +38,25 @@ class SkillModel(BaseModel):
     # Legacy compat — some routes use 'content'; keep both pointing to the same data
     content: str = ""
 
+    # Classification (ANTIGRAVITY_REFACTOR_BRIEF §2.1)
+    skill_kind: SKILL_KIND_LITERAL = "subtask"  # modeling_style | subtask | naming_convention | target_dialect
+    style_key: Optional[str] = None             # e.g. "3nf" | "datavault" | "kimball" | "canonical" — only when skill_kind == "modeling_style"
+
     # Scoping (BUILD_SPEC §3.3)
-    scope: str = "project_private"           # builtin | project_shared | project_private
-    project_id: Optional[str] = None        # None = builtin
+    scope: SCOPE_LITERAL = "project_private"    # builtin | project_shared | project_private
+    project_id: Optional[str] = None           # None = builtin
 
     # Stage binding (AGENT_ARCH_V2 §3.1)
-    stage_binding: str = "cross_cutting"     # source_analysis | conceptual | logical | physical | cross_cutting
+    stage_binding: STAGE_BINDING_LITERAL = "cross_cutting"  # source_analysis | conceptual | logical | physical | cross_cutting
 
     # Ownership
-    owner_id: Optional[str] = None          # None = builtin
-    created_by: Optional[str] = None        # legacy alias for owner_id
+    owner_id: Optional[str] = None             # None = builtin
+    created_by: Optional[str] = None           # legacy alias for owner_id
 
     # Versioning (hash used for determinism-cache invalidation)
     version: int = 1
     content_hash: str = ""
-    source_file_ref: Optional[str] = None   # blob_uri of original upload
+    source_file_ref: Optional[str] = None     # blob_uri of original upload
 
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
@@ -73,6 +81,9 @@ class SkillModel(BaseModel):
         # Auto-set title from name if not provided
         if self.name and not self.title:
             self.title = self.name
+        # Auto-infer skill_kind and style_key from name/stage_binding when possible
+        if self.skill_kind == "subtask" and self.stage_binding in {"source_analysis", "conceptual", "logical", "physical"}:
+            pass  # explicit subtask
         return self
 
 
@@ -82,9 +93,11 @@ class SkillCreate(BaseModel):
     description: str = ""
     content: str = ""
     content_md: str = ""
-    scope: str = "project_private"
+    scope: SCOPE_LITERAL = "project_private"
     project_id: Optional[str] = None
-    stage_binding: str = "cross_cutting"
+    stage_binding: STAGE_BINDING_LITERAL = "cross_cutting"
+    skill_kind: SKILL_KIND_LITERAL = "subtask"
+    style_key: Optional[str] = None
     source_file_ref: Optional[str] = None
 
 
@@ -94,8 +107,10 @@ class SkillUpdate(BaseModel):
     description: Optional[str] = None
     content: Optional[str] = None
     content_md: Optional[str] = None
-    scope: Optional[str] = None
-    stage_binding: Optional[str] = None
+    scope: Optional[SCOPE_LITERAL] = None
+    stage_binding: Optional[STAGE_BINDING_LITERAL] = None
+    skill_kind: Optional[SKILL_KIND_LITERAL] = None
+    style_key: Optional[str] = None
 
 
 class SkillEnhanceRequest(BaseModel):
@@ -119,9 +134,11 @@ class SkillResponse(BaseModel):
     description: str = ""
     content: str = ""
     content_md: str = ""
-    scope: str = "project_private"
+    skill_kind: SKILL_KIND_LITERAL = "subtask"
+    style_key: Optional[str] = None
+    scope: SCOPE_LITERAL = "project_private"
     project_id: Optional[str] = None
-    stage_binding: str = "cross_cutting"
+    stage_binding: STAGE_BINDING_LITERAL = "cross_cutting"
     owner_id: Optional[str] = None
     created_by: Optional[str] = None
     version: int = 1

@@ -26,6 +26,14 @@ from config import settings
 from database import get_db
 from middleware.error_handler import ADMException
 from models.user import UserModel
+from core.agents.source_intelligence import run_source_intelligence_agent
+from core.agents.conceptual_modeling import run_conceptual_modeling_agent
+from core.agents.logical_modeling import run_logical_modeling_agent
+from core.agents.physical_modeling import run_physical_modeling_agent
+from core.agents.skill_curator import run_skill_curator_agent
+from core.logging import get_logger
+
+logger = get_logger(__name__)
 
 router = APIRouter()
 
@@ -166,6 +174,46 @@ async def _ensure_canonical_agents(db) -> None:
         )
 
 
+AGENT_RUNNERS = {
+    "source-intelligence": run_source_intelligence_agent,
+    "conceptual-modeling": run_conceptual_modeling_agent,
+    "logical-modeling": run_logical_modeling_agent,
+    "physical-modeling": run_physical_modeling_agent,
+    "skill-curator": run_skill_curator_agent,
+}
+
+
+async def _run_native_agent(agent_name: str, body: AgentRunRequest, db) -> Dict[str, Any]:
+    """Execute a native LangGraph agent inline and return the result."""
+    runner = AGENT_RUNNERS.get(agent_name)
+    if not runner:
+        raise ADMException("NOT_FOUND", f"No native runner for agent '{agent_name}'.")
+
+    kwargs = {
+        "session_id": body.session_id,
+        "project_id": body.project_id,
+        "instruction": body.instruction,
+        "context_refs": body.context_refs,
+        "directives": body.directives,
+        "trace_id": body.trace_id,
+        "db": db,
+    }
+
+    if agent_name == "skill-curator":
+        kwargs["task"] = body.context_refs.get("curator_task", "match")
+        kwargs["instruction"] = body.instruction
+        kwargs["payload"] = body.context_refs.get("curator_payload", {})
+        kwargs.pop("context_refs", None)
+        kwargs.pop("directives", None)
+
+    try:
+        result = await runner(**kwargs)
+        return result if isinstance(result, dict) else {"output": str(result)}
+    except Exception as exc:
+        logger.error("Native agent execution failed", exc_info=True, extra={"agent": agent_name, "task_id": body.task_id})
+        raise ADMException("AGENT_TOOL_FAILURE", f"Agent '{agent_name}' failed: {exc}") from exc
+
+
 # ─── Endpoints ───────────────────────────────────────────────────────────────
 
 @router.post("/{agent_name}/run")
@@ -207,15 +255,35 @@ async def run_agent(
         endpoint_uri = registry.get("endpoint_uri")
         if not endpoint_uri:
             raise ADMException("AGENT_TOOL_FAILURE", f"Agent '{agent_name}' is registered as A2A but has no endpoint_uri.")
-        # Fire-and-forget to A2A endpoint (single retry, 5s timeout per spec)
         try:
-            async with httpx.AsyncClient(timeout=5) as client:
-                await client.post(f"{endpoint_uri}/run", json=body.model_dump())
-        except Exception:
-            pass  # Non-fatal — task is logged, result will come via WS
+            async with httpx.AsyncClient(timeout=settings.TIMEOUT_PEER_CALL) as client:
+                resp = await client.post(
+                    f"{endpoint_uri}/run",
+                    json=body.model_dump(),
+                )
+                resp.raise_for_status()
+                return {"status": "dispatched", "task_id": task_id, "transport": "a2a", "message": f"Task dispatched to A2A agent '{agent_name}'."}
+        except httpx.TimeoutException:
+            raise ADMException("AGENT_TIMEOUT", f"A2A dispatch to '{agent_name}' timed out.")
+        except Exception as exc:
+            raise ADMException("AGENT_TOOL_FAILURE", f"A2A dispatch to '{agent_name}' failed: {exc}") from exc
 
-    # TODO Phase 4: dispatch native LangGraph subgraph invocation
-    # TODO Phase 6: enqueue as Celery task
+    # Native transport — execute agent inline
+    try:
+        result = await _run_native_agent(agent_name, body, db)
+        output = result.get("output") or result.get("output_text") or json.dumps(result)
+        return {
+            "task_id": task_id,
+            "agent_name": agent_name,
+            "status": "completed",
+            "trace_id": trace_id,
+            "result": output,
+            "message": f"Agent '{agent_name}' completed synchronously.",
+        }
+    except ADMException:
+        raise
+    except Exception as exc:
+        raise ADMException("AGENT_TOOL_FAILURE", f"Native agent '{agent_name}' failed: {exc}") from exc
 
     return {
         "task_id": task_id,
@@ -274,12 +342,30 @@ async def peer_call(
         except Exception as exc:
             raise ADMException("AGENT_TOOL_FAILURE", f"Peer call to A2A agent '{agent_name}' failed: {exc}")
 
-    # Native transport — TODO Phase 4: invoke LangGraph subgraph directly
-    # Stub answer for now
-    return PeerCallResponse(
-        answer=f"[Stub] {agent_name} acknowledges the question: '{body.question[:100]}'. Native subgraph invocation will be wired in Phase 4.",
-        thinking=[f"Received peer call from {body.from_agent}", "Native dispatch pending Phase 4 implementation"],
-    )
+    # Native transport — invoke the agent's LangGraph subgraph inline
+    runner = AGENT_RUNNERS.get(agent_name)
+    if runner:
+        try:
+            result = await runner(
+                session_id=body.context_refs.get("session_id", ""),
+                project_id=body.context_refs.get("project_id", ""),
+                instruction=body.question,
+                context_refs=body.context_refs,
+                directives=[],
+                trace_id=trace_id,
+                db=db,
+            )
+            output = result.get("output") or result.get("output_text") or json.dumps(result)
+            return PeerCallResponse(
+                answer=str(output)[:2000],
+                confidence=0.9,
+                thinking=[f"Native dispatch to {agent_name} completed", f"Question: {body.question[:100]}"],
+            )
+        except Exception as exc:
+            logger.error("Native peer-call failed", exc_info=True, extra={"to_agent": agent_name, "from_agent": body.from_agent})
+            raise ADMException("AGENT_TOOL_FAILURE", f"Native peer-call to '{agent_name}' failed: {exc}") from exc
+
+    raise ADMException("NOT_FOUND", f"No native runner registered for agent '{agent_name}'.")
 
 
 @router.get("/{agent_name}/.well-known/agent-card.json")

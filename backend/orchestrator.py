@@ -33,75 +33,17 @@ from api.routes.auth import get_current_user
 from api.routes.skills import _industry_skills
 from models.user import UserModel
 from core.chat_orchestration import run_chat_orchestration
+from core.logging import get_logger
+
+logger = get_logger(__name__)
 
 orchestrator_router = APIRouter()
 
 # ─────────────────────────────────────────────────────────────
-# Built-in Skill Library (Medallion / Kimball / Data Vault)
+# Skill resolution — skills are now authoritative data, not
+# compile-time Python dicts. Loaded from backend/skills/*.md and
+# the skills collection in Mongo. Per ANTIGRAVITY_REFACTOR_BRIEF §2.1.
 # ─────────────────────────────────────────────────────────────
-BUILTIN_SKILLS: Dict[str, str] = {
-    "3nf-normalization": """
-# 3NF Normalization Skill
-- Eliminate partial dependencies: 1NF → 2NF → 3NF
-- Enforce atomic values; no repeating groups
-- Separate all non-key attributes into own entities
-- Use surrogate PKs: {entity}_id (BIGINT or UUID)
-- Naming convention: snake_case, ISO timestamps (TIMESTAMP_NTZ)
-- PII fields: apply SHA-256 hashing or tokenization
-- Add audit columns: created_at, updated_at, is_deleted (soft-delete)
-""",
-    "dimensional-modeling": """
-# Kimball Dimensional Modeling Skill
-- Identify business processes, declare grain, list dimensions and facts
-- Fact table grain must be explicitly stated before designing
-- Use surrogate keys for all dimension tables (never business keys as PK)
-- Apply Slowly Changing Dimensions Type 2 (SCD2) by default
-- Create conformed dimensions shared across multiple fact tables
-- Star schema preferred; snowflake only when cardinality demands
-- Naming: fact_{business_process}, dim_{entity}
-- Always include dim_date and dim_time calendar dimensions
-""",
-    "data-vault": """
-# Data Vault 2.0 Skill
-- Hubs: business keys + LOAD_DATE + RECORD_SOURCE (no descriptive attributes)
-- Links: FK relationships between Hubs + LOAD_DATE + RECORD_SOURCE
-- Satellites: descriptive attributes + LOAD_DATE + RECORD_SOURCE + HASH_DIFF
-- Hash keys: SHA-256 of UPPER(TRIM(business_key)), pipe-delimited for composites
-- Insert-only pattern — never update, never delete
-- PIT (Point-in-Time) tables for snapshot query acceleration
-- Bridge tables for many-to-many resolution
-- Schema prefixes: HUB_, LNK_, SAT_, PIT_, BRG_
-""",
-    "source-analysis": """
-# Source Analysis Skill
-- Profile every table: row count, null rate, distinct count, min/max/avg per column
-- Flag PII columns: name, email, phone, address, DOB, SSN, passport, IP address
-- Flag PHI columns: diagnoses, medications, lab results, insurance IDs
-- Flag Financial: account numbers, card numbers, transaction amounts
-- Infer FK relationships from _id suffix and column-name patterns
-- Classify sensitivity tier: Public, Internal, Confidential, Restricted
-- Recommend masking per tier: Tokenize, Hash, Truncate, Suppress
-- Produce a data dictionary with business descriptions per column
-""",
-    "pii-classification": """
-# PII Classification Skill
-- Tier 1 (Restricted): SSN, passport, financial account, card numbers → SHA-256 hash
-- Tier 2 (Confidential): name, email, phone, full address, DOB → Tokenize
-- Tier 3 (Internal): IP address, user agent, device ID → Truncate or pseudonymize
-- PHI (HIPAA): diagnoses, medications, lab results, insurance IDs → Suppress or encrypt
-- Tag every flagged column with: pii_tier, masking_strategy, regulatory_framework
-""",
-    "sttm": """
-# STTM (Source-to-Target Mapping) Skill
-- Map every source column to its target column with transformation rule
-- Rules: TRIM, UPPER, LOWER, COALESCE, CAST, DATE_TRUNC, SHA2, TOKENIZE
-- Default values for nullable targets: NULL, 'UNKNOWN', 0, CURRENT_TIMESTAMP
-- DQ rules per column: NOT NULL, REGEX_MATCH, FOREIGN_KEY, RANGE_CHECK
-- Load strategy: Full Load | Incremental (watermark) | CDC (log-based)
-- Generate DDL: CREATE TABLE with constraints, comments, and partitioning hints
-- Include STTM matrix columns: src_table, src_col, tgt_table, tgt_col, rule, dq_check, load_type
-""",
-}
 
 # Markdown files under backend/skills are the authoritative standards. The
 # compatibility dictionary is rebuilt at import for the legacy planning APIs.
@@ -350,8 +292,8 @@ async def run_orchestrator(req: OrchestratorRequest, current_user: UserModel = D
         try:
             if chat.get("created_by") == str(current_user.id):
                 await db["chats"].update_one({"_id": chat["_id"]}, {"$set": {"title": result["chat_title"]}})
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Failed to update chat title", extra={"chat_id": str(chat.get("_id")), "error": str(exc)})
     return OrchestratorResponse(**{**result, "suggested_workflow": suggested_workflow})
 
 
@@ -384,112 +326,94 @@ def _skill_from_prompt(prompt: str) -> str:
         return "3nf-normalization"
     return "source-analysis"
 
-def _agent_doc(agent_id: str, name: str, description: str, skills: List[str]) -> Dict[str, Any]:
-    return {
-        "_id": agent_id,
-        "name": name,
-        "description": description,
-        "agent_type": "local",
-        "remote_uri": None,
-        "default_skills": skills,
-        "created_at": "2026-01-01T00:00:00",
-    }
 
-def _required_agents_for_skill(skill: str) -> List[Dict[str, Any]]:
-    if skill == "dimensional-modeling":
-        return [
-            _agent_doc("agent-source-profiler", "Source Analysis Agent", "Profiles source files and database schemas, then builds profiler, dictionary, classification, and source relationship artifacts.", ["source-analysis", "pii-classification"]),
-            _agent_doc("agent-conceptual-modeler", "Conceptual Model Agent", "Builds concepts, relationship names, and cardinalities from source/domain context.", ["source-analysis"]),
-            _agent_doc("agent-dimensional-modeler", "Dimensional Model Agent", "Creates Kimball facts, dimensions, grain declarations, surrogate keys, and SCD rules.", ["dimensional-modeling"]),
-            _agent_doc("agent-sttm-automator", "Physical Model & STTM Agent", "Creates physical tables, DDL, STTM mappings, transformations, and DQ rules.", ["sttm"]),
-        ]
-    if skill == "data-vault":
-        return [
-            _agent_doc("agent-source-profiler", "Source Analysis Agent", "Profiles source files and database schemas, then builds profiler, dictionary, classification, and source relationship artifacts.", ["source-analysis", "pii-classification"]),
-            _agent_doc("agent-conceptual-modeler", "Conceptual Model Agent", "Builds concepts, relationship names, and cardinalities from source/domain context.", ["source-analysis"]),
-            _agent_doc("agent-data-vault", "Data Vault Agent", "Creates hubs, links, satellites, hash keys, PIT/bridge suggestions, and audit metadata.", ["data-vault"]),
-            _agent_doc("agent-sttm-automator", "Physical Model & STTM Agent", "Creates physical tables, DDL, STTM mappings, transformations, and DQ rules.", ["sttm"]),
-        ]
-    return [
-        _agent_doc("agent-source-profiler", "Source Analysis Agent", "Profiles source files and database schemas, then builds profiler, dictionary, classification, and source relationship artifacts.", ["source-analysis", "pii-classification"]),
-        _agent_doc("agent-conceptual-modeler", "Conceptual Model Agent", "Builds concepts, relationship names, and cardinalities from source/domain context.", ["source-analysis"]),
-        _agent_doc("agent-logical-normalizer", "Logical Model Agent", "Creates entities, attributes, PK/FK and 3NF/enterprise modeling rules.", ["3nf-normalization"]),
-        _agent_doc("agent-sttm-automator", "Physical Model & STTM Agent", "Creates physical tables, DDL, STTM mappings, transformations, and DQ rules.", ["sttm"]),
-    ]
+async def _stage_nodes_for_modeling_skill(modeling_skill: str, req: OrchestratorPlanRequest, db, current_user_id: str) -> tuple[list[dict], list[dict], list[str]]:
+    """Return skill-driven stage nodes instead of hardcoded agent nodes."""
+    created_skills: list[str] = []
 
-@orchestrator_router.post("/plan", response_model=OrchestratorPlanResponse)
-async def plan_orchestrator(req: OrchestratorPlanRequest, current_user: UserModel = Depends(get_current_user), db=Depends(get_db)):
-    modeling_skill = _skill_from_prompt(req.prompt)
-    required = _required_agents_for_skill(modeling_skill)
-    created_agents: List[str] = []
-    created_skills: List[str] = []
+    base_skills = ["source-analysis", "conceptual-modeling", "sttm"]
+    if modeling_skill in ("dimensional-modeling", "data-vault", "3nf-normalization"):
+        base_skills.append(modeling_skill)
 
-    for skill_key in sorted({skill for agent in required for skill in agent["default_skills"]}):
-        builtin_content = BUILTIN_SKILLS.get(skill_key)
-        existing_skill = await db["skills"].find_one({
+    for skill_key in base_skills:
+        existing = await db["skills"].find_one({
             "$or": [
                 {"name": skill_key, "created_by": None},
-                {"name": skill_key, "created_by": str(current_user.id)},
+                {"name": skill_key, "created_by": current_user_id},
             ]
         })
-        if not existing_skill and builtin_content:
-            await db["skills"].insert_one({
-                "name": skill_key,
-                "description": f"Generated modeling skill for {skill_key}",
-                "content": builtin_content.strip(),
-                "created_by": str(current_user.id),
-            })
-            created_skills.append(skill_key)
+        if not existing:
+            content = BUILTIN_SKILLS.get(skill_key, "")
+            if content:
+                await db["skills"].insert_one({
+                    "name": skill_key,
+                    "title": skill_key,
+                    "description": f"Auto-seeded {skill_key} skill",
+                    "content": content.strip(),
+                    "content_md": content.strip(),
+                    "scope": "builtin",
+                    "stage_binding": "cross_cutting",
+                    "skill_kind": "subtask" if skill_key in ("source-analysis", "conceptual-modeling", "sttm") else "modeling_style",
+                    "style_key": modeling_skill.replace("-normalization", "") if skill_key == modeling_skill else None,
+                    "created_by": current_user_id,
+                    "owner_id": current_user_id,
+                    "version": 1,
+                })
+                created_skills.append(skill_key)
 
-    installed_custom = await db["agents"].find({}).to_list(length=500)
-    installed_by_name = {a.get("name", "").lower(): a for a in installed_custom}
-    installed_by_id = {str(a.get("_id")): a for a in installed_custom}
+    stage_defs = [
+        {
+            "id": "stage-source-analysis",
+            "name": "Source Analysis",
+            "stage": "1-source-analysis",
+            "description": "Profile source files and database schemas. Build data dictionary, classify columns, detect keys and relationships.",
+            "skills": ["source-analysis", "pii-classification"],
+        },
+        {
+            "id": "stage-conceptual-modeling",
+            "name": "Conceptual Modeling",
+            "stage": "2-conceptual",
+            "description": "Derive business concepts and relationships from approved source analysis.",
+            "skills": ["conceptual-modeling"],
+        },
+        {
+            "id": "stage-logical-modeling",
+            "name": "Logical Modeling",
+            "stage": "3-logical",
+            "description": f"Create logical entities, attributes, and relationships using {modeling_skill} rules.",
+            "skills": [modeling_skill, "naming-convention-enforcement"],
+        },
+        {
+            "id": "stage-physical-modeling",
+            "name": "Physical Modeling & STTM",
+            "stage": "4-physical-sttm",
+            "description": "Generate physical tables, surrogate keys, STTM mappings, and DDL for the target dialect.",
+            "skills": ["sttm", "naming-convention-enforcement", "scd-temporal-best-practices"],
+        },
+    ]
 
-    nodes: List[Dict[str, Any]] = []
-    for index, agent in enumerate(required):
-        selected = installed_by_id.get(agent["_id"]) or installed_by_name.get(agent["name"].lower())
-        if selected:
-            agent_id = str(selected.get("_id"))
-            name = selected.get("name", agent["name"])
-            description = selected.get("description", agent["description"])
-            skills = selected.get("default_skills", agent["default_skills"])
-            agent_type = selected.get("agent_type", "local")
-            remote_uri = selected.get("remote_uri")
-        else:
-            result = await db["agents"].insert_one({
-                "name": agent["name"],
-                "description": agent["description"],
-                "agent_type": agent["agent_type"],
-                "remote_uri": agent["remote_uri"],
-                "default_skills": agent["default_skills"],
-            })
-            agent_id = str(result.inserted_id)
-            name = agent["name"]
-            description = agent["description"]
-            skills = agent["default_skills"]
-            agent_type = "local"
-            remote_uri = None
-            created_agents.append(name)
-
+    nodes: list[dict] = []
+    for stage_def in stage_defs:
         nodes.append({
-            "id": f"{agent['_id']}-{index}",
-            "type": "agent",
-            "position": {"x": 110 + index * 280, "y": 170},
+            "id": stage_def["id"],
+            "type": "stage",
+            "position": {"x": 110 + stage_defs.index(stage_def) * 280, "y": 170},
             "data": {
-                "agentId": agent_id,
-                "name": name,
-                "description": description,
-                "framework": "A2A Remote" if agent_type == "remote" else "Local Agent",
+                "agentId": stage_def["id"],
+                "name": stage_def["name"],
+                "description": stage_def["description"],
+                "framework": "LangGraph Agent",
                 "status": "idle",
                 "model": settings.DEFAULT_MODEL,
-                "skills": ", ".join(skills),
+                "skills": ", ".join(stage_def["skills"]),
                 "inputs": ", ".join([*(req.source_files or ["all project sources"]), *(req.existing_model_files or []), req.standard_naming_notes or "standard naming notes"]),
                 "knowledgeFiles": "",
                 "hitlEnabled": True,
-                "a2aEnabled": agent_type == "remote",
-                "remoteUri": remote_uri or "",
-                "customPrompt": f"Apply {modeling_skill} using project inputs. Preserve HITL review before publishing artifacts.",
+                "a2aEnabled": False,
+                "remoteUri": "",
+                "customPrompt": f"Run {stage_def['name']} for this project. Preserve HITL review before publishing artifacts.",
                 "kgOptIn": False,
+                "stage": stage_def["stage"],
             },
         })
 
@@ -504,14 +428,22 @@ async def plan_orchestrator(req: OrchestratorPlanRequest, current_user: UserMode
         for i in range(len(nodes) - 1)
     ]
 
+    return nodes, edges, created_skills
+
+
+@orchestrator_router.post("/plan", response_model=OrchestratorPlanResponse)
+async def plan_orchestrator(req: OrchestratorPlanRequest, current_user: UserModel = Depends(get_current_user), db=Depends(get_db)):
+    modeling_skill = _skill_from_prompt(req.prompt)
+    nodes, edges, created_skills = await _stage_nodes_for_modeling_skill(modeling_skill, req, db, str(current_user.id))
+
     return OrchestratorPlanResponse(
         workflow_name=f"{modeling_skill.replace('-', ' ').title()} Pipeline",
         modeling_skill=modeling_skill,
         nodes=nodes,
         edges=edges,
-        created_agents=created_agents,
+        created_agents=[],
         created_skills=created_skills,
-        hitl_summary="Review every suggested agent node, update prompts/skills/inputs/A2A where needed, then run the pipeline.",
+        hitl_summary="Review every suggested stage node, update skills/inputs/A2A where needed, then run the pipeline.",
     )
 
 @orchestrator_router.post("/a2a/validate", response_model=A2AValidateResponse)
@@ -554,7 +486,7 @@ class SkillInjectResponse(BaseModel):
     action: str
 
 @orchestrator_router.post("/inject-skill", response_model=SkillInjectResponse)
-async def inject_skill(req: SkillInjectRequest):
+async def inject_skill(req: SkillInjectRequest, current_user: UserModel = Depends(get_current_user)):
     content = BUILTIN_SKILLS.get(req.skill_key)
     if not content:
         raise HTTPException(

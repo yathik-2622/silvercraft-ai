@@ -32,6 +32,10 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, status
 from api.routes.auth import get_current_user
 from config import settings
 from database import get_db
+from core.chat_orchestration import run_chat_orchestration
+from core.logging import get_logger
+
+logger = get_logger(__name__)
 
 router = APIRouter()
 
@@ -130,8 +134,8 @@ async def chat_stream(session_id: str, ws: WebSocket, db=Depends(get_db)):
             payload = _decode_token(token)
             user_id = payload.get("sub")
             user = await db["users"].find_one({"email": user_id}) if user_id else None
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("WebSocket auth failed", extra={"session_id": session_id, "error": str(exc)})
 
     await ws_manager.connect(session_id, ws)
 
@@ -157,11 +161,27 @@ async def chat_stream(session_id: str, ws: WebSocket, db=Depends(get_db)):
                 await ws.send_text(_trace_event("output", {"pong": True, "session_id": session_id}))
 
             elif action == "chat_message":
-                # User sent a chat message through the WS — relay to orchestrator
-                # For now: acknowledge and note REST is the primary path
-                await ws.send_text(_trace_event("output", {
-                    "message": "Message received. Use POST /api/v1/orchestrator/run for chat messages. WS is for streaming trace events.",
-                }))
+                try:
+                    request = msg.get("request", {})
+                    request.setdefault("chat_id", session_id)
+                    request.setdefault("project_id", msg.get("project_id", ""))
+                    request.setdefault("current_stage", msg.get("current_stage", "1-source-analysis"))
+                    request.setdefault("generate_chat_title", False)
+                    response = await run_chat_orchestration(db, user_id or msg.get("user_id", ""), request)
+                    await ws.send_text(_trace_event("completed", {
+                        "session_id": session_id,
+                        "reply": response.get("reply", ""),
+                        "stage": response.get("stage", ""),
+                        "source": response.get("source", ""),
+                        "artifact": response.get("artifact"),
+                    }, trace_id=msg.get("trace_id", "")))
+                except Exception as exc:
+                    logger.error("WS chat_message handler failed", exc_info=True)
+                    await ws.send_text(_trace_event("error", {
+                        "session_id": session_id,
+                        "message": str(exc),
+                        "code": "CHAT_ORCHESTRATION_FAILED",
+                    }, trace_id=msg.get("trace_id", "")))
 
             elif action == "subscribe_gate":
                 gate = msg.get("gate", "")
@@ -181,6 +201,6 @@ async def chat_stream(session_id: str, ws: WebSocket, db=Depends(get_db)):
     except Exception as exc:
         try:
             await ws.send_text(_trace_event("error", {"message": str(exc)}))
-        except Exception:
-            pass
+        except Exception as inner_exc:
+            logger.debug("Failed to send error event to WS", extra={"session_id": session_id, "error": str(inner_exc)})
         ws_manager.disconnect(session_id, ws)

@@ -253,8 +253,8 @@ async def test_db_connection(
     creds = {}
     try:
         creds = json.loads(_decrypt(doc["host_ref"]))
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Failed to decrypt connection credentials", extra={"connection_id": str(oid), "error": str(exc)})
 
     test_result = await _test_connection(
         dialect=doc["dialect"],
@@ -307,8 +307,8 @@ async def list_connection_tables(
     creds = {}
     try:
         creds = json.loads(_decrypt(doc["host_ref"]))
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Failed to decrypt connection credentials", extra={"connection_id": str(oid), "error": str(exc)})
 
     test_result = await _test_connection(
         dialect=doc["dialect"],

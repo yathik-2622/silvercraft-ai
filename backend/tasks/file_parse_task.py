@@ -95,6 +95,6 @@ def parse_file_task(self, file_id: str, project_id: str, uri: str, filename: str
                 {"$set": {"parse_status": "error", "error_message": str(exc)}}
             ))
             client.close()
-        except Exception:
-            pass
+        except Exception as exc2:
+            logger.debug("Failed to update parse status after failure", extra={"file_id": file_id, "error": str(exc2)})
         raise self.retry(exc=exc)

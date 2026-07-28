@@ -23,6 +23,11 @@ try:
 except ImportError:
     LANGGRAPH_AVAILABLE = False
 
+from core.agents.source_intelligence import run_source_intelligence_agent
+from core.agents.conceptual_modeling import run_conceptual_modeling_agent
+from core.agents.logical_modeling import run_logical_modeling_agent
+from core.agents.physical_modeling import run_physical_modeling_agent
+
 
 STAGE_AGENTS = {
     "1-source-analysis": ("Source Analysis Agent", "Profile supplied sources, ask only for missing source scope, and return a data dictionary, quality observations, relationships, and sensitive-data findings."),
@@ -30,6 +35,18 @@ STAGE_AGENTS = {
     "3-logical": ("Logical Modeling Agent", "Create normalized logical entities, attributes, PK/FK relationships, and validation assumptions."),
     "4-physical-sttm": ("Physical Data Modeling Agent", "Create target-dialect physical design guidance, DDL-ready structures, and source-to-target mappings."),
 }
+
+STAGE_DISPATCH = {
+    "1-source-analysis": run_source_intelligence_agent,
+    "2-conceptual": run_conceptual_modeling_agent,
+    "3-logical": run_logical_modeling_agent,
+    "4-physical-sttm": run_physical_modeling_agent,
+}
+
+
+def _resolve_agent_for_stage(stage: str) -> tuple[str, str]:
+    name, instruction = STAGE_AGENTS.get(stage, STAGE_AGENTS["1-source-analysis"])
+    return name, instruction
 
 
 class ModelingState(TypedDict, total=False):
@@ -44,6 +61,7 @@ class ModelingState(TypedDict, total=False):
     output: str
     response_mode: str
     intake_required: bool
+    db: Any  # Motor async DB handle — injected at runtime
 
 
 async def _chat_completion(runtime: dict, system_prompt: str, user_prompt: str) -> str:
@@ -92,8 +110,8 @@ async def _supervisor_node(state: ModelingState) -> dict:
             missing = decision.get("missing_inputs") or []
             suffix = f"\n\nMissing inputs: {', '.join(map(str, missing))}." if mode == "delegate" and missing else ""
             return {"master_brief": response + suffix, "response_mode": mode}
-    except (TypeError, ValueError, json.JSONDecodeError):
-        pass
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        logger.debug("Supervisor returned non-JSON, falling back to text parse", extra={"error": str(exc)})
     # Compatibility fallback for OpenAI-compatible gateways that do not honor JSON mode.
     mode = "chat" if raw.lstrip().upper().startswith("CHAT:") else "delegate"
     return {"master_brief": raw.replace("CHAT:", "", 1).replace("DELEGATE:", "", 1).strip(), "response_mode": mode}
@@ -117,15 +135,44 @@ async def _intake_node(state: ModelingState) -> dict:
 
 
 async def _specialist_node(state: ModelingState) -> dict:
-    instruction = (
-        f"You are {state['agent_name']}. {state['agent_instruction']}\n"
-        "Return valid JSON only, never Markdown. Use the stage shape: source analysis = {tables, relationships, warnings, thinking}; "
-        "conceptual = {concepts, relationships, warnings, thinking}; logical = {entities, relationships, warnings, thinking}; "
-        "physical = {tables, sttm, ddl, warnings, thinking}. Every table/entity must contain a name and columns/attributes when evidence exists. "
-        "Never claim to inspect a file, table, or database that has not been supplied.\n\n"
-        f"Master delegation brief:\n{state['master_brief']}\n\nParsed source context:\n{json.dumps(state['project_context'], default=str)[:30000]}\n\nApplicable skill Markdown:\n{state['skills_markdown']}"
-    )
-    return {"output": await _chat_completion(state["runtime"], instruction, state["user_prompt"])}
+    """Dispatch to the real stage-owner agent subgraph instead of a single LLM call."""
+    db = state.get("db")
+    stage = state.get("stage", "1-source-analysis")
+    agent_name, _ = _resolve_agent_for_stage(stage)
+    project_context = state.get("project_context") or {}
+
+    context_refs = {
+        "target_dialect": project_context.get("target_dialect", "snowflake"),
+        "modeling_style": project_context.get("modeling_style", "kimball"),
+        "skill_refs": {
+            "source_analysis": state.get("source_analysis_skills", []),
+            "conceptual": state.get("conceptual_skills", []),
+            "logical": state.get("logical_skills", []),
+            "physical": state.get("physical_skills", []),
+        },
+        "source_file_ids": project_context.get("source_file_ids", []),
+    }
+
+    runner = STAGE_DISPATCH.get(stage)
+    if runner is None:
+        return {"output": json.dumps({"error": f"No agent registered for stage {stage}"}), "response_mode": "chat"}
+
+    try:
+        result = await runner(
+            session_id=project_context.get("session_id", ""),
+            project_id=project_context.get("project_id", ""),
+            instruction=state.get("user_prompt", ""),
+            context_refs=context_refs,
+            directives=project_context.get("directives", []),
+            trace_id=project_context.get("trace_id", ""),
+            db=db,
+        )
+        output = result.get("output") or result.get("output_text") or json.dumps(result)
+        if isinstance(output, dict):
+            output = json.dumps(output)
+        return {"output": output, "response_mode": "delegate"}
+    except Exception as exc:
+        return {"output": json.dumps({"error": str(exc)}), "response_mode": "chat", "error": str(exc)}
 
 
 async def _chat_node(state: ModelingState) -> dict:
@@ -183,6 +230,50 @@ async def _resolve_source_context(db, project_id: str | None, source_file_ids: l
     return {"source_tables": [table for document in documents for table in document["tables"]], "parsed_documents": documents}
 
 
+async def resolve_active_skills(db, user_id: str, skills: list[str], stage: str, project_context: dict) -> dict[str, list[str]]:
+    """Resolve which skill IDs are active for each stage — never hardcode style→agent mappings."""
+    stage_skill_map: dict[str, list[str]] = {
+        "source_analysis": [],
+        "conceptual": [],
+        "logical": [],
+        "physical": [],
+    }
+    if not skills:
+        return stage_skill_map
+
+    # Load all accessible skills
+    cursor = db["skills"].find({
+        "name": {"$in": [s.lstrip("/") for s in skills]},
+        "$or": [{"created_by": None}, {"created_by": user_id}],
+    }, {"_id": 1, "name": 1, "stage_binding": 1, "skill_kind": 1, "style_key": 1})
+    skill_docs = await cursor.to_list(length=100)
+    skill_by_name = {s.get("name", ""): s for s in skill_docs}
+
+    for skill_name in skills:
+        clean_name = skill_name.lstrip("/")
+        doc = skill_by_name.get(clean_name)
+        if not doc:
+            continue
+        binding = doc.get("stage_binding", "cross_cutting")
+        skill_id = str(doc["_id"])
+        if binding in stage_skill_map:
+            stage_skill_map[binding].append(skill_id)
+
+    # Auto-bind style skill for logical/physical stages when a style_key is set in project context
+    logical_style_key = project_context.get("modeling_style_key") or project_context.get("modeling_style")
+    if logical_style_key and stage in ("logical", "physical"):
+        style_skill = await db["skills"].find_one({
+            "stage_binding": stage,
+            "skill_kind": "modeling_style",
+            "style_key": logical_style_key,
+            "$or": [{"created_by": None}, {"created_by": user_id}],
+        }, {"_id": 1})
+        if style_skill and str(style_skill["_id"]) not in stage_skill_map.get(stage, []):
+            stage_skill_map[stage].append(str(style_skill["_id"]))
+
+    return stage_skill_map
+
+
 async def _generate_chat_title(runtime: dict, user_prompt: str) -> str:
     """Use the orchestrator model to title a conversation by intent, not raw text."""
     title = await _chat_completion(runtime, "Create only a concise 3-7 word chat title based on the user's intent. No quotes, punctuation, or explanation.", user_prompt)
@@ -190,19 +281,21 @@ async def _generate_chat_title(runtime: dict, user_prompt: str) -> str:
 
 
 async def run_chat_orchestration(db, user_id: str, request: dict[str, Any]) -> dict[str, Any]:
-    """Run a LangGraph supervisor -> specialist handoff and persist its A2A audit trail."""
+    """Run a LangGraph supervisor -> real stage-owner agent handoff and persist its A2A audit trail."""
     if not MODELING_GRAPH:
         raise HTTPException(status_code=503, detail="LangGraph is not installed. Install backend requirements before starting the API.")
     stage = request.get("current_stage") or "1-source-analysis"
-    agent_name, agent_instruction = STAGE_AGENTS.get(stage, STAGE_AGENTS["1-source-analysis"])
+    agent_name, agent_instruction = _resolve_agent_for_stage(stage)
     runtime = await resolve_llm_runtime(db, user_id)
     if request.get("model_name"):
-        runtime["default_model"] = str(request["model_name"]).strip()
+        runtime["default_model"] = str(request.get("model_name", "")).strip()
     run_id = str(uuid4())
     skills_markdown = await _resolve_skill_markdown(db, user_id, request.get("skills") or [])
     project_context = dict(request.get("schema_context") or {})
     project_context.update(await _resolve_source_context(db, request.get("project_id"), project_context.get("source_file_ids") or []))
-    
+    project_context["session_id"] = project_context.get("session_id", request.get("chat_id", ""))
+    project_context["trace_id"] = project_context.get("trace_id", run_id)
+
     # Phase 8: Conversation Memory Integration
     if request.get("project_id"):
         memories = await get_project_memories(request.get("project_id"))
@@ -211,18 +304,36 @@ async def run_chat_orchestration(db, user_id: str, request: dict[str, Any]) -> d
         if request.get("prompt"):
             asyncio.create_task(extract_and_store_memory(request.get("project_id"), request.get("prompt"), user_id))
 
+    # Resolve active skills per stage (ANTIGRAVITY_REFACTOR_BRIEF §2.2)
+    active_skills = await resolve_active_skills(db, user_id, request.get("skills") or [], stage, project_context)
+
     started = datetime.utcnow()
-    state = await MODELING_GRAPH.ainvoke({"runtime": runtime, "stage": stage, "agent_name": agent_name, "agent_instruction": agent_instruction, "user_prompt": request.get("prompt", ""), "project_context": project_context, "skills_markdown": skills_markdown})
+    state = await MODELING_GRAPH.ainvoke({
+        "runtime": runtime,
+        "stage": stage,
+        "agent_name": agent_name,
+        "agent_instruction": agent_instruction,
+        "user_prompt": request.get("prompt", ""),
+        "project_context": project_context,
+        "skills_markdown": skills_markdown,
+        "db": db,
+        "source_analysis_skills": active_skills.get("source_analysis", []),
+        "conceptual_skills": active_skills.get("conceptual", []),
+        "logical_skills": active_skills.get("logical", []),
+        "physical_skills": active_skills.get("physical", []),
+    })
     completed = datetime.utcnow()
-    output = state["output"]
+    output = state.get("output", "")
     chat_title = await _generate_chat_title(runtime, request.get("prompt", "")) if request.get("generate_chat_title") else None
     if state.get("response_mode") == "chat":
-        event = {"run_id": run_id, "agent_name": "master-orchestrator", "stage": stage, "framework": "langgraph", "status": "completed", "started_at": started, "completed_at": completed, "summary": output[:500]}
+        event = {"run_id": run_id, "agent_name": "master-orchestrator", "stage": stage, "framework": "langgraph", "status": "completed", "started_at": started, "completed_at": completed, "summary": str(output)[:500]}
         return {"reply": output, "stage": stage, "source": "langgraph-supervisor", "agent_events": [event], "artifact": None, "chat_title": chat_title}
+
+    # Persist A2A audit trail — real delegation to a stage-owner agent
     await db["a2a_messages"].insert_one({"run_id": run_id, "project_id": request.get("project_id"), "workflow_id": request.get("workflow_id"), "from_agent": "master-orchestrator", "to_agent": agent_name, "message_type": "delegation", "payload": {"stage": stage, "prompt": request.get("prompt", "")}, "created_at": started})
     await db["a2a_messages"].insert_one({"run_id": run_id, "project_id": request.get("project_id"), "workflow_id": request.get("workflow_id"), "from_agent": agent_name, "to_agent": "master-orchestrator", "message_type": "result", "payload": {"stage": stage, "output": output}, "created_at": completed})
-    supervisor_event = {"run_id": run_id, "agent_name": "master-orchestrator", "stage": stage, "framework": "langgraph", "status": "delegated", "started_at": started, "completed_at": completed, "summary": state["master_brief"][:500]}
-    specialist_event = {"run_id": run_id, "agent_name": agent_name, "stage": stage, "framework": "langgraph", "status": "completed", "started_at": started, "completed_at": completed, "summary": output[:500]}
+    supervisor_event = {"run_id": run_id, "agent_name": "master-orchestrator", "stage": stage, "framework": "langgraph", "status": "delegated", "started_at": started, "completed_at": completed, "summary": str(state.get("master_brief", ""))[:500]}
+    specialist_event = {"run_id": run_id, "agent_name": agent_name, "stage": stage, "framework": "langgraph", "status": "completed", "started_at": started, "completed_at": completed, "summary": str(output)[:500]}
     if request.get("project_id") or request.get("workflow_id"):
-        await db["agent_runs"].insert_one({**specialist_event, "project_id": request.get("project_id"), "workflow_id": request.get("workflow_id"), "chat_id": request.get("chat_id"), "created_by": user_id, "master_brief": state["master_brief"], "output": output, "skills": request.get("skills") or []})
+        await db["agent_runs"].insert_one({**specialist_event, "project_id": request.get("project_id"), "workflow_id": request.get("workflow_id"), "chat_id": request.get("chat_id"), "created_by": user_id, "master_brief": state.get("master_brief", ""), "output": output, "skills": request.get("skills") or []})
     return {"reply": output, "stage": stage, "source": "langgraph-supervisor", "agent_events": [supervisor_event, specialist_event], "artifact": {"title": agent_name, "stage": stage, "content": output, "requires_hitl": True}, "chat_title": chat_title}

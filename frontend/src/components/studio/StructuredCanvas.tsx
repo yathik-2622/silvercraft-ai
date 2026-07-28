@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react';
-import { Check, Save, Database, GitMerge } from 'lucide-react';
+import { Check, Save } from 'lucide-react';
 import ReactFlow, { Background, Controls, Handle, Position, MarkerType, useNodesState, useEdgesState } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { projectsApi, sessionsApi } from '../../api/client';
+import { sessionsApi } from '../../api/client';
 
 export type CanvasArtifact = { id: string; title: string; stage: string; content: string; status: 'awaiting_hitl' | 'approved' };
 
@@ -41,10 +41,6 @@ export const StructuredCanvas = ({ artifact, view, onSave, projectId, chatId }: 
   const initial = useMemo(() => artifact ? decode(artifact.content) : null, [artifact]);
   const [draft, setDraft] = useState<any>(initial);
   const [dirty, setDirty] = useState(false);
-  const [pushing, setPushing] = useState(false);
-  const [showGitModal, setShowGitModal] = useState(false);
-  const [gitRepo, setGitRepo] = useState('');
-  const [gitBranch, setGitBranch] = useState('main');
 
   if (!artifact) return <div className="grid flex-1 place-items-center p-8 text-center text-sm text-slate-500">A structured stage output will appear here after an agent completes work.</div>;
   if (!initial) return <div className="grid flex-1 place-items-center p-8 text-center text-sm text-slate-500">This legacy artifact is prose. Regenerate it to receive the ADM structured canvas format.</div>;
@@ -79,63 +75,16 @@ export const StructuredCanvas = ({ artifact, view, onSave, projectId, chatId }: 
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
 
   const commit = () => { onSave(JSON.stringify(draft, null, 2)); setDirty(false); };
-  
-  const handlePushGit = async () => {
-    if (!projectId || !gitRepo) return;
-    setPushing(true);
-    try {
-      await projectsApi.pushToGithub(projectId, gitRepo, gitBranch, ['ddl', 'sttm', 'json_model']);
-      alert('Successfully pushed to GitHub!');
-      setShowGitModal(false);
-    } catch (e: any) {
-      alert('Failed to push: ' + (e.response?.data?.detail || e.message));
-    } finally {
-      setPushing(false);
-    }
-  };
-
-  const handlePushMetastore = async () => {
-    if (!chatId) return;
-    setPushing(true);
-    try {
-      await sessionsApi.pushToMetastore(chatId);
-      alert('Queued deployment to Metastore!');
-    } catch (e: any) {
-      alert('Failed: ' + (e.response?.data?.detail || e.message));
-    } finally {
-      setPushing(false);
-    }
-  };
-
-  const isPhysical = artifact.stage.includes('physical');
 
   return <div className="min-h-0 flex-1 overflow-auto bg-[#faf7f2] p-4 flex flex-col relative">
     <div className="mb-3 flex items-center justify-between rounded-xl border border-[#ece6da] bg-white px-3 py-2 z-10">
       <div><div className="text-xs font-bold text-slate-900">{artifact.title}</div><div className="text-[11px] text-slate-500">{artifact.stage.replaceAll('-', ' ')}</div></div>
       <div className="flex items-center gap-2">
-        {isPhysical && (
-          <>
-            <button onClick={() => setShowGitModal(true)} disabled={pushing} className="inline-flex items-center gap-1 rounded-lg border border-[#ece6da] bg-white px-2.5 py-1.5 text-[11px] font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-40"><GitMerge className="h-3.5 w-3.5" />Push to Git</button>
-            <button onClick={handlePushMetastore} disabled={pushing} className="inline-flex items-center gap-1 rounded-lg border border-[#ece6da] bg-white px-2.5 py-1.5 text-[11px] font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-40"><Database className="h-3.5 w-3.5" />Metastore</button>
-          </>
-        )}
         {dirty && <span className="rounded-full bg-[#ffe7da] px-2 py-1 text-[10px] font-bold text-[#d93c0a]">Unsaved changes</span>}
         <button onClick={commit} disabled={!dirty} className="inline-flex items-center gap-1 rounded-lg bg-[#e67225] px-2.5 py-1.5 text-[11px] font-bold text-white disabled:opacity-40"><Save className="h-3.5 w-3.5" />Save</button>
       </div>
     </div>
     
-    {showGitModal && (
-      <div className="absolute top-16 right-4 z-50 w-64 rounded-xl border border-slate-200 bg-white p-4 shadow-xl">
-        <h3 className="text-xs font-bold mb-2">Push to GitHub</h3>
-        <input placeholder="Repo name (e.g. data-models)" value={gitRepo} onChange={e => setGitRepo(e.target.value)} className="w-full text-xs border rounded p-1.5 mb-2" />
-        <input placeholder="Branch (e.g. main)" value={gitBranch} onChange={e => setGitBranch(e.target.value)} className="w-full text-xs border rounded p-1.5 mb-2" />
-        <div className="flex justify-end gap-2">
-          <button onClick={() => setShowGitModal(false)} className="text-xs text-slate-500 hover:text-slate-800">Cancel</button>
-          <button onClick={handlePushGit} disabled={pushing || !gitRepo} className="bg-[#e67225] text-white text-xs px-2 py-1 rounded font-bold disabled:opacity-50">{pushing ? 'Pushing...' : 'Push'}</button>
-        </div>
-      </div>
-    )}
-
     {view === 'erd' ? (
       <div className="flex-1 min-h-[400px] bg-white rounded-xl border border-[#ece6da]">
         <ReactFlow

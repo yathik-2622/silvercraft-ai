@@ -14,49 +14,23 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List
 
-from core.agents.base_agent import AgentState, llm_call, tool_emit_trace, tool_query_mongo, tool_read_skill
+from core.agents.base_agent import AgentState, TOOL_SCHEMAS, llm_call, tool_emit_trace, tool_query_mongo, tool_read_skill
 from core.runtime_settings import resolve_llm_runtime
 
-SYSTEM_PROMPT = """You are a business analyst and information architect translating raw data assets into business concepts.
-You work in ADM Agent Studio 2.0 as the ConceptualModelingAgent.
+SYSTEM_PROMPT = """You are ConceptualModelingAgent, responsible for deriving the business concepts and their relationships from a confirmed source analysis. You think like a business analyst translating physical tables into the nouns and associations the business actually recognizes — merge tables representing one real concept, never mechanically emit one concept per table.
 
-Your responsibilities (Stage 2, Steps 2.1–2.2):
-2.1 Generate a clean list of BUSINESS CONCEPTS (nouns) — one concept per real-world entity.
-    Each concept must map back to one or more source tables from the G1 output.
-2.2 Derive RELATIONSHIPS between concepts as verb-phrase associations with cardinality.
+TOOLS: query_mongo (pull the approved Stage 1 output), read_skill/list_skills (apply any modeling-style skill bound to "conceptual" — e.g. canonical vs. dimensional concept-merging rules differ, follow the skill's stated rules exactly), call_peer_agent (ask SourceIntelligenceAgent when a grain or cardinality question can't be resolved from the Stage 1 output alone), emit_trace.
 
-Output format (JSON only):
-{
-  "concepts": {
-    "<ConceptName>": {
-      "definition": "One-sentence business definition",
-      "synonyms": ["alias1"],
-      "source_tables": ["customers", "customer_emails"],
-      "is_core": true,
-      "domain": "Customer"
-    }
-  },
-  "relationships": [
-    {
-      "from_concept": "Customer",
-      "to_concept": "Order",
-      "verb_phrase": "places",
-      "inverse_verb": "placed by",
-      "cardinality": "1:N",
-      "assumptions": ["One customer can place many orders"]
-    }
-  ],
-  "modeling_assumptions": ["..."]
-}
+Before finalizing concept boundaries or relationship definitions, call list_skills(stage_binding="conceptual") and apply any bound skill's rules as hard constraints. If two bound skills conflict on a concept-merging rule, the skill with the more specific stage binding wins; if still tied, follow the explicit project directive.
 
-Rules:
-- NEVER invent concepts not grounded in G1 source tables
-- Merge similar source tables into a single concept when they represent the same business entity
-- Use business language in definition — avoid technical jargon
+CONVERGENCE RULE: if you run multiple internal reasoning passes or sub-checks, converge them into ONE consolidated output before returning — never return competing drafts. Unresolved ambiguity becomes a flagged "needs_human_input" item inside your single output, not a second draft.
+
+SCOPE: conceptual entities and relationships only — no column-level detail, no physical or logical naming. Decline anything outside data modeling for this project. Output valid JSON only, with a "thinking" trace array.
 """
 
 
-async def node_init(state: AgentState, db=None) -> AgentState:
+async def node_init(state: AgentState) -> AgentState:
+    db = state.get("db")
     state["thinking"] = ["Initializing ConceptualModelingAgent"]
     state["peer_call_count"] = state.get("peer_call_count", 0)
     state["status"] = "running"
@@ -71,18 +45,19 @@ async def node_init(state: AgentState, db=None) -> AgentState:
     return state
 
 
-async def node_fetch_g1(state: AgentState, db=None) -> AgentState:
+async def node_fetch_g1(state: AgentState) -> AgentState:
     await tool_emit_trace(state.get("session_id", ""), "thinking", {"step": "2.0", "label": "Loading G1 source analysis output"})
     session_id = state.get("session_id", "")
     g1 = {}
+    db = state.get("db")
     if db and session_id:
-        gates = await tool_query_mongo("session_gates", {"session_id": session_id, "gate": "G1"}, db)
+        gates = await tool_query_mongo("session_gates", {"session_id": session_id, "gate": {"$in": ["G1"]}}, db)
         g1 = (gates[0] if gates else {}).get("output_payload", {})
     state["context_refs"] = {**(state.get("context_refs") or {}), "_g1": g1}
     return state
 
 
-async def node_conceptual_model(state: AgentState, db=None) -> AgentState:
+async def node_conceptual_model(state: AgentState) -> AgentState:
     await tool_emit_trace(state.get("session_id", ""), "thinking", {"step": "2.1-2.2", "label": "Generating concepts and relationships"})
     runtime = resolve_llm_runtime(None)
     ctx = state.get("context_refs", {})
@@ -95,7 +70,7 @@ async def node_conceptual_model(state: AgentState, db=None) -> AgentState:
         "Return the full conceptual model as valid JSON."
     )
     try:
-        raw = await llm_call(runtime, SYSTEM_PROMPT + skills_block, user_prompt, response_format="json")
+        raw = await llm_call(runtime, SYSTEM_PROMPT + skills_block, user_prompt, tools=TOOL_SCHEMAS, state=state)
         result = json.loads(raw)
     except Exception as exc:
         result = {"error": str(exc)}
@@ -105,10 +80,12 @@ async def node_conceptual_model(state: AgentState, db=None) -> AgentState:
     return state
 
 
-async def node_save_gate(state: AgentState, db=None) -> AgentState:
-    if db and state.get("session_id"):
+async def node_save_gate(state: AgentState) -> AgentState:
+    db = state.get("db")
+    session_id = state.get("session_id", "")
+    if db and session_id:
         await db["session_gates"].update_one(
-            {"session_id": state["session_id"], "gate": "G2"},
+            {"session_id": session_id, "gate": "G2"},
             {"$set": {"status": "ready", "output_payload": state.get("output", {}), "has_unsaved_changes": False, "stage_steps": ["2.1", "2.2"], "completed_at": __import__("datetime").datetime.utcnow()}},
             upsert=True,
         )
@@ -139,11 +116,11 @@ CONCEPTUAL_MODELING_GRAPH = build_conceptual_modeling_subgraph()
 
 
 async def run_conceptual_modeling_agent(session_id, project_id, instruction, context_refs, directives, trace_id, db):
-    initial: AgentState = {"session_id": session_id, "project_id": project_id, "trace_id": trace_id, "stage": "conceptual_modeling", "instruction": instruction, "directives": directives, "context_refs": context_refs, "runtime": {}, "peer_call_count": 0, "skills_markdown": "", "tool_calls": [], "thinking": [], "output": {}, "output_text": "", "error": None, "status": "running"}
+    initial: AgentState = {"session_id": session_id, "project_id": project_id, "trace_id": trace_id, "stage": "conceptual_modeling", "instruction": instruction, "directives": directives, "context_refs": context_refs, "db": db, "runtime": {}, "peer_call_count": 0, "skills_markdown": "", "tool_calls": [], "thinking": [], "output": {}, "output_text": "", "error": None, "status": "running"}
     if CONCEPTUAL_MODELING_GRAPH:
         return await CONCEPTUAL_MODELING_GRAPH.ainvoke(initial)
-    s = await node_init(initial, db)
-    s = await node_fetch_g1(s, db)
-    s = await node_conceptual_model(s, db)
-    s = await node_save_gate(s, db)
+    s = await node_init(initial)
+    s = await node_fetch_g1(s)
+    s = await node_conceptual_model(s)
+    s = await node_save_gate(s)
     return s

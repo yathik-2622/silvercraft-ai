@@ -1,5 +1,8 @@
 from motor.motor_asyncio import AsyncIOMotorClient
 from config import settings
+from core.logging import get_logger
+
+logger = get_logger(__name__)
 
 class _DB:
     client: AsyncIOMotorClient = None
@@ -21,12 +24,12 @@ async def connect_to_mongo():
     await _db.db["agent_runs"].create_index([("project_id", 1), ("created_at", -1)])
     await _db.db["artifacts"].create_index([("chat_id", 1), ("created_at", -1)])
     await _db.db["artifacts"].create_index("project_id")
-    print(f"Connected to MongoDB: {settings.MONGODB_DB_NAME}")
+    logger.info("Connected to MongoDB", extra={"database": settings.MONGODB_DB_NAME})
 
 async def close_mongo_connection():
     if _db.client:
         _db.client.close()
-        print("MongoDB connection closed.")
+        logger.info("MongoDB connection closed.")
 
 def get_db():
     return _db.db

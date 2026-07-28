@@ -11,6 +11,9 @@ from datetime import datetime
 
 from config import settings
 from database import get_db
+from core.logging import get_logger
+
+logger = get_logger(__name__)
 
 try:
     from langchain_openai import ChatOpenAI
@@ -78,7 +81,7 @@ async def extract_and_store_memory(project_id: str, message: str, user_id: str) 
         return entities
 
     except Exception as e:
-        print(f"Failed to extract memory: {e}")
+        logger.error("Failed to extract memory", exc_info=True)
         return []
 
 

@@ -542,8 +542,8 @@ export const StudioPage: React.FC = () => {
                           )}
                         </div>
                       </div>
-                    </motion.article>
-                  )))}
+                      </motion.article>
+                  ))}
                   {busy && (
                     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="my-5 rounded-2xl border border-[#e67225]/20 bg-white/70 p-4 shadow-sm">
                       <div className="flex items-center gap-2 text-xs font-bold text-slate-700"><span className="h-2 w-2 animate-pulse rounded-full bg-[#e67225]" /> ADM architect activity</div>

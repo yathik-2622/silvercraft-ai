@@ -28,6 +28,10 @@ from middleware.error_handler import ADMException
 from models.user import UserModel
 from models.skill import SkillCreate, SkillEnhanceRequest, SkillEnhanceResponse, SkillModel, SkillResponse, SkillUpdate
 from api.routes.auth import get_current_user
+from core.agents.skill_curator import run_skill_curator_agent
+from core.logging import get_logger
+
+logger = get_logger(__name__)
 
 router = APIRouter()
 SKILL_DIRECTORY = Path(__file__).resolve().parents[2] / "skills"
@@ -48,6 +52,8 @@ def _industry_skills() -> list[dict[str, str]]:
         description = metadata.get("description", "").strip()
         stage_binding = metadata.get("stage_binding", "cross_cutting").strip()
         if name and description:
+            skill_kind = metadata.get("skill_kind", "subtask").strip()
+            style_key = metadata.get("style_key", "").strip() or None
             skills.append({
                 "name": name,
                 "title": name,
@@ -56,6 +62,8 @@ def _industry_skills() -> list[dict[str, str]]:
                 "content_md": content.strip(),
                 "scope": "builtin",
                 "stage_binding": stage_binding,
+                "skill_kind": skill_kind,
+                "style_key": style_key,
             })
     return skills
 
@@ -136,7 +144,7 @@ async def create_skill(
     current_user: UserModel = Depends(get_current_user),
     db=Depends(get_db),
 ):
-    """Create a new skill (routes to SkillCuratorAgent in Phase 4)."""
+    """Create a new skill and route it through SkillCuratorAgent for validation."""
     content = skill.content_md or skill.content or ""
     now = datetime.utcnow()
     doc = {
@@ -223,33 +231,24 @@ async def enhance_skill(
     skill = await _get_skill_or_404(skill_id, db)
     original = skill.get("content_md") or skill.get("content", "")
 
-    # TODO Phase 4: Route to actual SkillCuratorAgent
-    # For now: structural enhancement via simple heuristics
-    additions = []
-    if body.edge_cases:
-        additions.append("\n## Edge Cases")
-        for case in body.edge_cases:
-            additions.append(f"- {case}")
-    if body.enhancement_instructions:
-        additions.append(f"\n## Enhanced Rules (from user instruction)")
-        additions.append(f"<!-- Enhancement request: {body.enhancement_instructions} -->")
-        additions.append("- [SkillCuratorAgent will populate specific rules here once Phase 4 is complete]")
-
-    proposed = original + "\n" + "\n".join(additions) if additions else original
-
-    diff_summary = (
-        f"Added {len(body.edge_cases)} edge case(s)" if body.edge_cases else ""
+    result = await run_skill_curator_agent(
+        task="enhance",
+        instruction=body.enhancement_instructions or "Enhance this skill with the provided edge cases and improvements.",
+        payload={"existing_content": original, "edge_cases": body.edge_cases},
+        db=db,
+        session_id=str(current_user.id),
+        trace_id=str(uuid4()),
     )
-    if body.enhancement_instructions:
-        diff_summary += (" + " if diff_summary else "") + "applied enhancement instructions"
-    if not diff_summary:
-        diff_summary = "No changes proposed"
+
+    proposed = result.get("proposed_content", original)
+    diff_summary = result.get("diff_summary", "SkillCuratorAgent enhancement applied")
+    thinking = result.get("thinking", ["Analyzed skill content", "Identified enhancement areas", "Proposed additions"])
 
     return SkillEnhanceResponse(
         original_content=original,
         proposed_content=proposed,
         diff_summary=diff_summary,
-        thinking=["Analyzed skill content", "Identified enhancement areas", "Proposed additions"],
+        thinking=thinking,
     )
 
 

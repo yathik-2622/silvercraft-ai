@@ -27,6 +27,10 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from core.logging import get_logger
+
+logger = get_logger(__name__)
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Error code → (http_status, retryable) registry
 # ADM_2.0_API_ERRORS_AND_TOPOLOGY.md §1.1
@@ -151,8 +155,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 
 async def generic_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    # Log server-side; never send stack trace to client
-    print(f"[INTERNAL_ERROR] {type(exc).__name__}: {exc}\n{traceback.format_exc()}")
+    logger.error("Unhandled exception", exc_info=True)
     return _envelope(
         code="INTERNAL_ERROR",
         message="An unexpected internal error occurred. Our team has been notified.",

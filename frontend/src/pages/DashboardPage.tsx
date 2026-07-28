@@ -17,7 +17,8 @@ export const DashboardPage: React.FC = () => {
   const [form, setForm] = useState(initialForm); const [editing, setEditing] = useState<Project | null>(null); const [provider, setProvider] = useState({ provider: 'platform', base_url: '', default_model: 'gpt-4o', api_key: '' });
   const [saving, setSaving] = useState(false); const [error, setError] = useState('');
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
-  const load = async () => { try { const response = await projectsApi.grouped(); setOwned(response.data.owned_projects ?? []); setShared(response.data.collaborator_projects ?? []); } catch (e: any) { setError(e.response?.data?.detail || 'Unable to load projects.'); } };
+  const [loading, setLoading] = useState(true);
+  const load = async () => { try { setLoading(true); const response = await projectsApi.grouped(); setOwned(response.data.owned_projects ?? []); setShared(response.data.collaborator_projects ?? []); } catch (e: any) { setError(e.response?.data?.detail || 'Unable to load projects.'); } finally { setLoading(false); } };
   useEffect(() => { void load(); }, []);
   const openCreate = () => { setEditing(null); setForm(initialForm); setShowProject(true); };
   const editProject = (project: Project) => { setEditing(project); setForm({ name: project.name, domain: project.domain ?? '', sub_domain: project.sub_domain ?? '', description: project.description ?? '', layer: project.layer ?? 'foundation', member: '', members: project.collaborators ?? [] }); setShowProject(true); };

@@ -18,53 +18,23 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List
 
-from core.agents.base_agent import AgentState, llm_call, tool_emit_trace, tool_query_mongo, tool_read_skill
+from core.agents.base_agent import AgentState, TOOL_SCHEMAS, llm_call, tool_emit_trace, tool_query_mongo, tool_read_skill
 from core.runtime_settings import resolve_llm_runtime
 
-SYSTEM_PROMPT = """You are a senior physical data engineer and platform specialist.
-You work in ADM Agent Studio 2.0 as the PhysicalModelingAgent.
+SYSTEM_PROMPT = """You are PhysicalModelingAgent, the senior physical data engineer. You own the full physical model: surrogate key strategy, physical naming, transformation logic, STTM generation, and DDL authoring — all as one coherent output.
 
-Your responsibilities (Stage 4, Steps 4.1–4.6):
-4.1 Apply surrogate key (SK) strategy:
-    - Kimball: IDENTITY/SEQUENCE integer SK for every DIMENSION
-    - Data Vault: MD5/SHA-256 HASHKEY for HUBs and LINKs
-    - 3NF: natural key or sequence as appropriate
-4.2 Standardize physical names per target_dialect conventions:
-    - Snowflake: UPPER_SNAKE_CASE, 255 char limit
-    - BigQuery: snake_case, 300 char limit
-    - Postgres: snake_case, 63 char limit
-    - SQL Server: PascalCase or snake_case, 128 char limit
-4.3 Apply transformation rules (casting, trimming, null defaults, date formatting)
-4.4 Generate STTM rows — one row per source→target column mapping
-4.5 Generate DDL per target_dialect:
-    - Include PK constraints, FK references, NOT NULL, DEFAULT, indexes
-    - Add column comments with business_name and sensitivity label
-    - Include partition hints for large fact tables
-4.6 Package: {physical_tables, sttm_rows, ddl_statements, artifacts_summary}
+TOOLS: query_mongo (pull approved G3 logical model), read_skill/list_skills (apply any bound skills for target-dialect rules, naming conventions, and SCD/temporal rules — these are hard constraints), call_peer_agent (consult LogicalModelingAgent when SCD or key strategy is ambiguous), web_reference (look up target-dialect syntax specifics when uncertain), emit_trace.
 
-Output format (JSON):
-{
-  "physical_tables": [
-    {
-      "tableName": "dim_customer",
-      "schema": "SILVER",
-      "ddl": "CREATE TABLE SILVER.DIM_CUSTOMER (\\n  CUSTOMER_SK BIGINT IDENTITY(1,1) PRIMARY KEY,\\n  ...",
-      "columns": [{"physical_name": "CUSTOMER_SK", "data_type": "BIGINT", "nullable": false, "is_pk": true, "is_sk": true, "source_col": null, "transformation": "IDENTITY"}],
-      "load_type": "Type 2 SCD"
-    }
-  ],
-  "sttm_rows": [
-    {"src_table": "customers", "src_col": "cust_id", "tgt_table": "DIM_CUSTOMER", "tgt_col": "CUSTOMER_BK", "transformation_rule": "CAST(cust_id AS VARCHAR(50))", "dq_check": "NOT NULL, UNIQUE", "load_type": "Full Load"}
-  ],
-  "modeling_assumptions": ["Used IDENTITY(1,1) for Kimball surrogate keys"],
-  "artifacts_summary": {"table_count": 5, "sttm_row_count": 42}
-}
+Your behavior is entirely defined by the Active Skills injected below. Follow the target_dialect constraints exactly as stated in the bound skill. If two skills conflict (e.g. naming_convention vs target_dialect), the more specific skill wins. If no target-dialect skill is bound, use the standard conventions for the declared target_dialect in your task pointer.
 
-CRITICAL: Generate real, executable DDL. Use dialect-specific syntax exactly.
+CONVERGENCE RULE: if you run multiple internal reasoning passes or sub-checks, converge them into ONE consolidated output before returning — never return competing drafts. Unresolved ambiguity becomes a flagged "needs_human_input" item inside your single output, not a second draft.
+
+SCOPE: you perform physical modeling, STTM, and DDL generation only. You do not do source analysis, conceptual modeling, or logical modeling. Output valid JSON only, including REAL executable DDL statements.
 """
 
 
-async def node_init(state: AgentState, db=None) -> AgentState:
+async def node_init(state: AgentState) -> AgentState:
+    db = state.get("db")
     state["thinking"] = ["Initializing PhysicalModelingAgent"]
     state["peer_call_count"] = state.get("peer_call_count", 0)
     state["status"] = "running"
@@ -79,10 +49,11 @@ async def node_init(state: AgentState, db=None) -> AgentState:
     return state
 
 
-async def node_fetch_context(state: AgentState, db=None) -> AgentState:
+async def node_fetch_context(state: AgentState) -> AgentState:
     await tool_emit_trace(state.get("session_id", ""), "thinking", {"step": "4.0", "label": "Loading G3 logical model output"})
     session_id = state.get("session_id", "")
     g3 = {}
+    db = state.get("db")
     if db and session_id:
         gates = await tool_query_mongo("session_gates", {"session_id": session_id, "gate": "G3"}, db)
         g3 = (gates[0] if gates else {}).get("output_payload", {})
@@ -91,7 +62,7 @@ async def node_fetch_context(state: AgentState, db=None) -> AgentState:
     return state
 
 
-async def node_physical_model(state: AgentState, db=None) -> AgentState:
+async def node_physical_model(state: AgentState) -> AgentState:
     await tool_emit_trace(state.get("session_id", ""), "thinking", {"step": "4.1-4.6", "label": "Generating physical model, DDL, and STTM"})
     state["thinking"].append("Steps 4.1–4.6: Physical model generation")
 
@@ -110,7 +81,7 @@ async def node_physical_model(state: AgentState, db=None) -> AgentState:
         "Return the complete physical model as valid JSON. Include REAL DDL statements. STTM must have one row per source-to-target column mapping."
     )
     try:
-        raw = await llm_call(runtime, SYSTEM_PROMPT + skills_block, user_prompt, response_format="json")
+        raw = await llm_call(runtime, SYSTEM_PROMPT + skills_block, user_prompt, tools=TOOL_SCHEMAS, state=state)
         result = json.loads(raw)
     except Exception as exc:
         result = {"error": str(exc)}
@@ -123,10 +94,12 @@ async def node_physical_model(state: AgentState, db=None) -> AgentState:
     return state
 
 
-async def node_save_gate(state: AgentState, db=None) -> AgentState:
-    if db and state.get("session_id"):
+async def node_save_gate(state: AgentState) -> AgentState:
+    db = state.get("db")
+    session_id = state.get("session_id", "")
+    if db and session_id:
         await db["session_gates"].update_one(
-            {"session_id": state["session_id"], "gate": "G4"},
+            {"session_id": session_id, "gate": "G4"},
             {"$set": {"status": "ready", "output_payload": state.get("output", {}), "has_unsaved_changes": False, "stage_steps": ["4.1", "4.2", "4.3", "4.4", "4.5", "4.6"], "completed_at": __import__("datetime").datetime.utcnow()}},
             upsert=True,
         )
@@ -157,11 +130,11 @@ PHYSICAL_MODELING_GRAPH = build_physical_modeling_subgraph()
 
 
 async def run_physical_modeling_agent(session_id, project_id, instruction, context_refs, directives, trace_id, db):
-    initial: AgentState = {"session_id": session_id, "project_id": project_id, "trace_id": trace_id, "stage": "physical_modeling", "instruction": instruction, "directives": directives, "context_refs": context_refs, "runtime": {}, "peer_call_count": 0, "skills_markdown": "", "tool_calls": [], "thinking": [], "output": {}, "output_text": "", "error": None, "status": "running"}
+    initial: AgentState = {"session_id": session_id, "project_id": project_id, "trace_id": trace_id, "stage": "physical_modeling", "instruction": instruction, "directives": directives, "context_refs": context_refs, "db": db, "runtime": {}, "peer_call_count": 0, "skills_markdown": "", "tool_calls": [], "thinking": [], "output": {}, "output_text": "", "error": None, "status": "running"}
     if PHYSICAL_MODELING_GRAPH:
         return await PHYSICAL_MODELING_GRAPH.ainvoke(initial)
-    s = await node_init(initial, db)
-    s = await node_fetch_context(s, db)
-    s = await node_physical_model(s, db)
-    s = await node_save_gate(s, db)
+    s = await node_init(initial)
+    s = await node_fetch_context(s)
+    s = await node_physical_model(s)
+    s = await node_save_gate(s)
     return s

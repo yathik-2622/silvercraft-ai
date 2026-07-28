@@ -22,6 +22,7 @@ from typing import Any, Dict, List
 
 from core.agents.base_agent import (
     AgentState,
+    TOOL_SCHEMAS,
     llm_call,
     tool_call_peer_agent,
     tool_emit_trace,
@@ -30,52 +31,22 @@ from core.agents.base_agent import (
 )
 from core.runtime_settings import resolve_llm_runtime
 
-SYSTEM_PROMPT = """You are a senior logical data modeler and information architect with 20+ years experience.
-You work in ADM Agent Studio 2.0 as the LogicalModelingAgent.
+SYSTEM_PROMPT = """You are LogicalModelingAgent, the senior logical data modeler. You own the full logical model: entity role assignment, attribute mapping, key strategy, relationship generation, and M:N resolution — these are interlocking judgments about the same entity set, not isolated checklists.
 
-Your responsibilities (Stage 3, Steps 3.1–3.10):
-3.1 SELECT modeling type (Kimball/Data Vault 2.0/3NF) based on project context and instruction
-3.2 Standardize all entity and attribute names using naming_skill rules
-3.3 Assign roles: FACT/DIMENSION (Kimball), HUB/LINK/SATELLITE (Data Vault), ENTITY (3NF)
-3.4 Map every source column to a logical attribute in the correct entity
-3.5 Classify each attribute: measure, conformed_dimension, degenerate, junk, SCD_tracking, metadata
-3.6 Identify natural business keys (NBK) + propose SK (surrogate key) strategy
-3.7 Review SCD type for each DIMENSION (Type 0/1/2/3/4/6) — default SCD2 for Customer/Product
-3.8 Map entities to enterprise model reference if existing_model_ref is provided
-3.9 Generate logical relationships (PK→FK, cardinality: 1:1 / 1:N / M:N)
-3.10 Resolve all M:N relationships into bridge/link entities
+TOOLS: query_mongo (pull approved G1/G2 outputs and enterprise-model references), read_skill/list_skills (apply any bound skills for modeling style, naming conventions, and temporal rules — these are hard constraints), call_peer_agent (consult SourceIntelligenceAgent for attribute-mapping ambiguity, ConceptualModelingAgent for concept-boundary questions, SkillCuratorAgent for skill discovery), emit_trace.
 
-Output format (JSON):
-{
-  "modeling_type": "kimball",
-  "entities": {
-    "<entity_name>": {
-      "role": "DIMENSION",
-      "source_tables": ["orders"],
-      "natural_business_keys": ["customer_id"],
-      "scd_type": 2,
-      "attributes": [
-        {"name": "customer_id", "logical_type": "INTEGER", "role": "natural_key", "source_col": "cust_id", "source_table": "customers"}
-      ],
-      "enterprise_model_match": null
-    }
-  },
-  "relationships": [
-    {"from_entity": "fact_sales", "from_attr": "customer_sk", "to_entity": "dim_customer", "to_attr": "customer_sk", "cardinality": "M:1", "relationship_type": "FK"}
-  ],
-  "bridge_entities": [],
-  "modeling_assumptions": ["Assumed SCD2 for dim_customer based on historical tracking requirement"]
-}
+Your behavior is entirely defined by the Active Skills injected below. If given a 3NF skill, produce normalized entities per its rules. If given a Data Vault skill, produce hubs/links/satellites per its rules. If given a Canonical skill, follow its merge/subject-area rules. Never default to a style not present in your active skills — if no modeling-style skill is active for this stage, ask for clarification rather than assuming one (surface as a "needs_human_input" flag in your output).
 
-Rules:
-- NEVER change source column name — always use source_col to track origin
-- Default SCD type = 2 for Customer, Product, Employee; SCD1 for all others unless instructed
-- Flag entities with > 100 attributes as God Objects — suggest decomposition
-- Use naming_skill for all standardization (injected below)
+Multiple skills may be active simultaneously (e.g. one modeling-style skill + one naming-convention skill). Apply all of them. If two active skills conflict, an explicit project-level directive from the user wins; otherwise the more specific skill (naming_convention) wins over the more general one (modeling_style).
+
+CONVERGENCE RULE: if you run multiple internal reasoning passes or sub-checks, converge them into ONE consolidated output before returning — never return competing drafts. Unresolved ambiguity becomes a flagged "needs_human_input" item inside your single output, not a second draft.
+
+SCOPE: you perform logical modeling only. You do not do source analysis, conceptual modeling, or physical DDL generation. Output valid JSON only, matching the schema you were given.
 """
 
 
-async def node_init(state: AgentState, db=None) -> AgentState:
+async def node_init(state: AgentState) -> AgentState:
+    db = state.get("db")
     state["thinking"] = ["Initializing LogicalModelingAgent"]
     state["peer_call_count"] = state.get("peer_call_count", 0)
     state["status"] = "running"
@@ -92,11 +63,12 @@ async def node_init(state: AgentState, db=None) -> AgentState:
     return state
 
 
-async def node_fetch_context(state: AgentState, db=None) -> AgentState:
+async def node_fetch_context(state: AgentState) -> AgentState:
     """Fetch G1 and G2 gate outputs via query_mongo."""
     await tool_emit_trace(state.get("session_id", ""), "thinking", {"step": "3.0", "label": "Loading prior stage outputs"})
     session_id = state.get("session_id", "")
     g1 = g2 = {}
+    db = state.get("db")
     if db and session_id:
         gates = await tool_query_mongo("session_gates", {"session_id": session_id, "gate": {"$in": ["G1", "G2"]}}, db)
         for g in gates:
@@ -109,7 +81,7 @@ async def node_fetch_context(state: AgentState, db=None) -> AgentState:
     return state
 
 
-async def node_logical_model(state: AgentState, db=None) -> AgentState:
+async def node_logical_model(state: AgentState) -> AgentState:
     """3.1–3.10 — Main logical modeling LLM call."""
     await tool_emit_trace(state.get("session_id", ""), "thinking", {"step": "3.1-3.10", "label": "Running logical modeling pass"})
     state["thinking"].append("Steps 3.1–3.10: Logical modeling LLM call")
@@ -131,7 +103,7 @@ async def node_logical_model(state: AgentState, db=None) -> AgentState:
     )
 
     try:
-        raw = await llm_call(runtime, SYSTEM_PROMPT + skills_block, user_prompt, response_format="json")
+        raw = await llm_call(runtime, SYSTEM_PROMPT + skills_block, user_prompt, tools=TOOL_SCHEMAS, state=state)
         result = json.loads(raw)
     except json.JSONDecodeError:
         result = {"raw_output": raw, "parse_error": "Not valid JSON"}
@@ -144,10 +116,12 @@ async def node_logical_model(state: AgentState, db=None) -> AgentState:
     return state
 
 
-async def node_save_gate(state: AgentState, db=None) -> AgentState:
-    if db and state.get("session_id"):
+async def node_save_gate(state: AgentState) -> AgentState:
+    db = state.get("db")
+    session_id = state.get("session_id", "")
+    if db and session_id:
         await db["session_gates"].update_one(
-            {"session_id": state["session_id"], "gate": "G3"},
+            {"session_id": session_id, "gate": "G3"},
             {"$set": {
                 "status": "ready",
                 "output_payload": state.get("output", {}),
@@ -184,11 +158,11 @@ LOGICAL_MODELING_GRAPH = build_logical_modeling_subgraph()
 
 
 async def run_logical_modeling_agent(session_id, project_id, instruction, context_refs, directives, trace_id, db):
-    initial: AgentState = {"session_id": session_id, "project_id": project_id, "trace_id": trace_id, "stage": "logical_modeling", "instruction": instruction, "directives": directives, "context_refs": context_refs, "runtime": {}, "peer_call_count": 0, "skills_markdown": "", "tool_calls": [], "thinking": [], "output": {}, "output_text": "", "error": None, "status": "running"}
+    initial: AgentState = {"session_id": session_id, "project_id": project_id, "trace_id": trace_id, "stage": "logical_modeling", "instruction": instruction, "directives": directives, "context_refs": context_refs, "db": db, "runtime": {}, "peer_call_count": 0, "skills_markdown": "", "tool_calls": [], "thinking": [], "output": {}, "output_text": "", "error": None, "status": "running"}
     if LOGICAL_MODELING_GRAPH:
         return await LOGICAL_MODELING_GRAPH.ainvoke(initial)
-    s = await node_init(initial, db)
-    s = await node_fetch_context(s, db)
-    s = await node_logical_model(s, db)
-    s = await node_save_gate(s, db)
+    s = await node_init(initial)
+    s = await node_fetch_context(s)
+    s = await node_logical_model(s)
+    s = await node_save_gate(s)
     return s

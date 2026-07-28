@@ -94,8 +94,8 @@ async def run_intake_agent(
         from bson import ObjectId
         try:
             project = await db["projects"].find_one({"_id": ObjectId(project_id)}) or {}
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("IntakeAgent failed to load project", extra={"project_id": project_id, "error": str(exc)})
 
     # Load existing project files (blobs)
     blob_uris: List[str] = []
@@ -105,6 +105,8 @@ async def run_intake_agent(
             uri = f.get("blob_uri") or f.get("file_path") or f.get("filename", "")
             if uri:
                 blob_uris.append(uri)
+    elif not db:
+        logger.debug("IntakeAgent running without db — skipping project file lookup")
 
     # Build pre-filled context from project
     pre_filled: Dict[str, Any] = {
