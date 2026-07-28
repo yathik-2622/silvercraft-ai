@@ -166,13 +166,15 @@ export interface SkillFile {
 
 export interface ChatMessage {
   id: string;
-  sender: "user" | "bot" | "system";
+  sender: "user" | "bot" | "system" | "assistant";
   text: string;
   timestamp: string;
   stageBadge?: HitlStageId;
   suggestedPrompts?: string[];
   requiresApproval?: boolean;
   attachments?: { name: string; type: string; size: number }[];
+  eventType?: 'thinking' | 'tool_call' | 'peer_call' | 'gate_ready' | 'output' | 'activity' | 'error' | string;
+  agentName?: string;
 }
 
 export type ModelingStyle = "Canonical" | "3NF" | "Dimensional" | "Data Vault";

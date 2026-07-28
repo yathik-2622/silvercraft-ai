@@ -1,26 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
 import {
-  Send,
-  Bot,
-  User,
-  Settings,
-  Paperclip,
-  ChevronDown,
-  ChevronUp,
-  Sliders,
-  FileCode,
-  Globe,
-  Plus,
-  Trash2,
-  FileText,
-  Eye,
-  X,
-  Check,
-  Sparkles,
-  PanelLeftClose,
-  Upload,
-  FileSpreadsheet,
-  Tag
+  Send, Bot, User, Settings, Paperclip, ChevronDown, ChevronUp, Sliders, FileCode, Globe, Plus, Trash2, FileText, Eye, X, Check, Sparkles, PanelLeftClose, Upload, FileSpreadsheet, Tag, Brain, Wrench, GitMerge, Shield, Activity, AlertTriangle
 } from "lucide-react";
 import {
   ChatMessage,
@@ -249,40 +229,65 @@ export const ConversationalAssistant: React.FC<ConversationalAssistantProps> = (
         )}
 
         {/* Chat Messages */}
-        {messages.map((msg) => (
-          <div
-            key={msg.id}
-            className={`flex gap-2.5 ${msg.sender === "user" ? "justify-end" : "justify-start"}`}
-          >
-            {msg.sender === "bot" && (
-              <div className="w-7 h-7 rounded-lg bg-orange-50 text-orange-600 flex items-center justify-center shrink-0 border border-orange-200 mt-1 shadow-2xs">
-                <Bot className="w-4 h-4" />
+        {messages.map((msg) => {
+          const isSystem = msg.sender === "system";
+          const isUser = msg.sender === "user";
+          
+          if (isSystem && msg.eventType) {
+            let Icon = Activity;
+            if (msg.eventType === 'thinking') Icon = Brain;
+            else if (msg.eventType === 'tool_call') Icon = Wrench;
+            else if (msg.eventType === 'peer_call') Icon = GitMerge;
+            else if (msg.eventType === 'gate_ready') Icon = Shield;
+            else if (msg.eventType === 'error') Icon = AlertTriangle;
+            
+            return (
+              <div key={msg.id} className="flex gap-2.5 justify-start items-center ml-2 my-1">
+                <Icon className={`w-4 h-4 ${msg.eventType === 'error' ? 'text-rose-500' : 'text-slate-400'}`} />
+                <span className={`text-[11px] italic font-medium ${msg.eventType === 'error' ? 'text-rose-600' : 'text-slate-500'}`}>
+                  {msg.text}
+                </span>
               </div>
-            )}
+            );
+          }
 
+          return (
             <div
-              className={`max-w-[88%] rounded-2xl p-3 text-xs space-y-1.5 leading-relaxed shadow-2xs ${
-                msg.sender === "user"
-                  ? "bg-orange-600 text-white rounded-tr-none font-medium"
-                  : "bg-white text-slate-700 border border-slate-200 rounded-tl-none"
-              }`}
+              key={msg.id}
+              className={`flex gap-2.5 ${isUser ? "justify-end" : "justify-start"}`}
             >
-              <div className="flex items-center justify-between gap-4 text-[10px] opacity-75 border-b border-current/10 pb-1">
-                <span className="font-bold">{msg.sender === "user" ? "You" : "Modeling Assistant"}</span>
-                <span>{msg.timestamp}</span>
+              {(msg.sender === "bot" || msg.sender === "assistant" || msg.sender === "system") && (
+                <div className="w-7 h-7 rounded-lg bg-orange-50 text-orange-600 flex items-center justify-center shrink-0 border border-orange-200 mt-1 shadow-2xs">
+                  {isSystem ? <Activity className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
+                </div>
+              )}
+
+              <div
+                className={`max-w-[88%] rounded-2xl p-3 text-xs space-y-1.5 leading-relaxed shadow-2xs ${
+                  isUser
+                    ? "bg-orange-600 text-white rounded-tr-none font-medium"
+                    : isSystem 
+                    ? "bg-slate-100 text-slate-700 border border-slate-200 rounded-tl-none italic"
+                    : "bg-white text-slate-700 border border-slate-200 rounded-tl-none"
+                }`}
+              >
+                <div className="flex items-center justify-between gap-4 text-[10px] opacity-75 border-b border-current/10 pb-1">
+                  <span className="font-bold">{isUser ? "You" : isSystem ? "System" : "Modeling Assistant"}</span>
+                  <span>{msg.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                </div>
+
+                {/* Message text */}
+                <div className="whitespace-pre-wrap">{msg.text}</div>
               </div>
 
-              {/* Message text */}
-              <div className="whitespace-pre-wrap">{msg.text}</div>
+              {isUser && (
+                <div className="w-7 h-7 rounded-lg bg-slate-200 text-slate-700 flex items-center justify-center shrink-0 border border-slate-300 mt-1 shadow-2xs">
+                  <User className="w-4 h-4" />
+                </div>
+              )}
             </div>
-
-            {msg.sender === "user" && (
-              <div className="w-7 h-7 rounded-lg bg-slate-200 text-slate-700 flex items-center justify-center shrink-0 border border-slate-300 mt-1 shadow-2xs">
-                <User className="w-4 h-4" />
-              </div>
-            )}
-          </div>
-        ))}
+          );
+        })}
 
         {isLoading && (
           <div className="flex gap-3 items-center text-xs text-orange-600 bg-white p-3 rounded-xl border border-slate-200 shadow-2xs">

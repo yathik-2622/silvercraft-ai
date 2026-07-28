@@ -59,6 +59,7 @@ export const StudioPage: React.FC = () => {
     const [response, artifactResponse] = await Promise.all([sessionsApi.getChat(id), artifactsApi.list(id)]);
     setChatId(id); 
     setMessages(response.data.messages ?? []); 
+    setAttachments((response.data.attachments ?? []).map((file: any) => ({ id: file.file_id, name: file.filename })));
     setArtifacts((artifactResponse.data ?? []).map((artifact: any) => ({ id: artifact.id, title: artifact.title, stage: artifact.stage, content: artifact.content, status: artifact.status })));
     setExpanded([...new Set((artifactResponse.data ?? []).map((artifact: any) => artifact.stage))]);
   };
@@ -142,9 +143,24 @@ export const StudioPage: React.FC = () => {
         return; 
       } 
       let result: any = null;
-      for await (const event of orchestratorApi.stream({ prompt: textToSend, current_stage: stage, workflow_type: 'orchestrator', skills: skills.map((skill) => skill.name), project_id: projectId, workflow_id: workflowId, chat_id: chatId, model_name: selectedModel, schema_context: { project: project?.name, domain: project?.domain, subdomain: project?.sub_domain, attachments: attachments.map((item) => item.name), source_connection: project?.source_connects, artifacts } })) {
+      for await (const event of orchestratorApi.stream({ prompt: textToSend, current_stage: stage, workflow_type: 'orchestrator', skills: skills.map((skill) => skill.name), project_id: projectId, workflow_id: workflowId, chat_id: chatId, model_name: selectedModel, schema_context: { project: project?.name, domain: project?.domain, subdomain: project?.sub_domain, attachments: attachments.map((item) => item.name), source_file_ids: attachments.map((item) => item.id), source_connection: project?.source_connects, artifacts } })) {
         if (event.event === 'activity') setActivity((items) => [...items, event.data.label || event.data.summary || 'Agent activity updated']);
-        if (event.event === 'error') throw new Error(event.data.detail || 'The orchestration stream failed.');
+        if (['thinking', 'tool_call', 'peer_call', 'gate_ready'].includes(event.event)) {
+          let text = '';
+          if (event.event === 'thinking') text = `Thinking... ${event.data.thought || ''}`;
+          if (event.event === 'tool_call') text = `Using tool: ${event.data.tool_name || 'unknown'}`;
+          if (event.event === 'peer_call') text = `Delegating to peer: ${event.data.agent_name || 'unknown'}`;
+          if (event.event === 'gate_ready') text = `Gate ready: ${event.data.gate || 'unknown'}`;
+          setMessages((items) => [...items, { 
+            id: `event-${Date.now()}-${Math.random()}`, 
+            sender: 'system', 
+            text, 
+            timestamp: new Date().toISOString(), 
+            eventType: event.event, 
+            agentName: event.data.agent_name 
+          }]);
+        }
+        if (event.event === 'error') throw new Error(event.data.detail || event.data.message || 'The orchestration stream failed.');
         if (event.event === 'result') result = event.data;
       }
       if (!result) throw new Error('The orchestration stream ended without a result.');
@@ -198,9 +214,26 @@ export const StudioPage: React.FC = () => {
     if (!files?.length) return; 
     try { 
       const response = await projectsApi.uploadFiles(projectId, 'chat_source', Array.from(files)); 
-      setAttachments((items) => [...items, ...response.data.map((file: any) => ({ id: file.id, name: file.filename }))]); 
-    } catch { 
-      setError('File upload failed.'); 
+      const uploaded = response.data.map((file: any) => ({ id: file.id, name: file.filename, contentType: file.content_type, size: file.size }));
+      
+      // Phase 7: Poll until parsing is complete
+      for (const file of uploaded) {
+        setActivity((items) => [...items, `Parsing ${file.name}...`]);
+        let status = 'processing';
+        while (status === 'processing' || status === 'pending') {
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+          const res = await projectsApi.getFileStatus(projectId, file.id);
+          status = res.data.parse_status;
+          if (status === 'failed') throw new Error(`Parsing failed for ${file.name}`);
+        }
+      }
+
+      await Promise.all(uploaded.map((file: any) => sessionsApi.attachFile(chatId, file.id, file.name, file.contentType, file.size)));
+      setAttachments((items) => [...items, ...uploaded.map((file: any) => ({ id: file.id, name: file.name }))]); 
+      setActivity([]);
+    } catch (e: any) { 
+      setError(e.message || 'File upload failed.'); 
+      setActivity([]);
     } 
   };
   const saveConnection = async (event: React.FormEvent) => { 
@@ -419,8 +452,8 @@ export const StudioPage: React.FC = () => {
                             {message.sender === 'system' ? 'System' : 'SilverCraft copilot'}
                           </div>
                         )}
-                        <div className={`whitespace-pre-wrap text-[15px] leading-relaxed ${message.sender === 'user' ? 'inline-block rounded-3xl bg-[#e67225] px-5 py-3 text-white shadow-md' : message.sender === 'system' ? 'text-rose-600' : 'text-slate-700'}`}>
-                          {message.text}
+                        <div className={`whitespace-pre-wrap text-[15px] leading-relaxed ${message.sender === 'user' ? 'inline-block rounded-3xl bg-[#e67225] px-5 py-3 text-white shadow-md' : message.sender === 'system' ? 'text-rose-600' : 'prose prose-sm max-w-none text-slate-700 prose-strong:text-slate-900 prose-a:text-[#e67225]'}`}>
+                          {message.sender === 'assistant' ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.text}</ReactMarkdown> : message.text}
                         </div>
                         {message.sender === 'assistant' && index === messages.length - 1 && (
                           <FollowUpActions onSelect={(followUp) => void sendPrompt(message.stage, followUp)} />
@@ -453,7 +486,7 @@ export const StudioPage: React.FC = () => {
           </div>
 
           {/* Composer */}
-          <div className={messages.length === 0 ? "absolute inset-x-0 top-[62%] z-10 -translate-y-1/2 px-5" : "px-5 pb-4 pt-2"}>
+          <div className={messages.length === 0 ? "absolute inset-x-0 top-[78%] z-10 -translate-y-1/2 px-5" : "px-5 pb-4 pt-2"}>
             <div className="mx-auto max-w-3xl rounded-2xl border border-slate-200 bg-white/90 shadow-[0_12px_35px_rgba(23,20,15,0.12)] backdrop-blur-2xl">
               <div className="flex flex-wrap items-center gap-2 px-4 pt-2.5">
                 <select value={selectedModel} onChange={(e) => setModel(e.target.value)} className="max-w-52 rounded-full border border-slate-200 bg-slate-50 px-4 py-1.5 text-xs font-semibold text-slate-700 outline-none focus:border-[#e67225]/50">

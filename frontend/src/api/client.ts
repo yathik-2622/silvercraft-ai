@@ -60,6 +60,8 @@ export const projectsApi = {
   exportArtifacts: (id: string, format: 'pdf' | 'docx' | 'md', data: object) =>
     apiClient.post(`/projects/${id}/export/${format}`, data, { responseType: 'blob' }),
   pushKnowledgeGraph: (id: string, data: object) => apiClient.post(`/projects/${id}/knowledge-graph`, data),
+  pushToGithub: (id: string, repoName: string, branch: string, artifacts: string[]) =>
+    apiClient.post(`/projects/${id}/push-to-github`, { repo_name: repoName, branch, artifacts }),
   uploadFiles: (id: string, category: string, files: File[]) => {
     const form = new FormData();
     form.append('category', category);
@@ -68,6 +70,7 @@ export const projectsApi = {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
   },
+  getFileStatus: (id: string, fileId: string) => apiClient.get(`/projects/${id}/files/${fileId}/status`),
 };
 
 export const settingsApi = {
@@ -112,6 +115,8 @@ export const sessionsApi = {
   deleteChat: (chatId: string) => apiClient.delete(`/chats/${chatId}`),
   listAgentRuns: (projectId: string) => apiClient.get(`/projects/${projectId}/agent-runs`),
   decideHitl: (workflowId: string, gateId: string, data: object) => apiClient.post(`/workflows/${workflowId}/hitl/${gateId}`, data),
+  pushToMetastore: (chatId: string) => apiClient.post(`/sessions/${chatId}/push/metastore`),
+  pushToKg: (chatId: string) => apiClient.post(`/sessions/${chatId}/push/kg`),
 
   // Per-chat attachment persistence
   attachFile: (chatId: string, fileId: string, filename: string, contentType?: string, size?: number) =>
@@ -155,26 +160,62 @@ export const orchestratorApi = {
     project_id?: string; workflow_id?: string; chat_id?: string; model_name?: string;
   }): AsyncGenerator<{ event: string; data: any }> {
     const token = useAuthStore.getState().token;
-    const response = await fetch(`${BASE_URL}/orchestrator/stream`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-      body: JSON.stringify(data),
+    if (!data.chat_id) throw new Error("Chat ID is required for WebSocket streaming.");
+
+    const wsUrl = `${BASE_URL.replace(/^http/, 'ws')}/chat/${data.chat_id}/stream${token ? `?token=${token}` : ''}`;
+    const ws = new WebSocket(wsUrl);
+
+    const eventQueue: { event: string; data: any }[] = [];
+    let resolveNext: (() => void) | null = null;
+    let isDone = false;
+    let wsError: Error | null = null;
+
+    ws.onmessage = (e) => {
+      try {
+        const payload = JSON.parse(e.data);
+        const eventType = payload.event_type || payload.event || 'message';
+        eventQueue.push({ event: eventType, data: payload });
+        if (resolveNext) {
+          resolveNext();
+          resolveNext = null;
+        }
+      } catch (err) {}
+    };
+
+    ws.onerror = () => {
+      wsError = new Error("WebSocket connection error.");
+      if (resolveNext) resolveNext();
+    };
+
+    ws.onclose = () => {
+      isDone = true;
+      if (resolveNext) resolveNext();
+    };
+
+    await new Promise<void>((resolve, reject) => {
+      ws.onopen = () => resolve();
+      ws.onerror = (e) => reject(new Error("WebSocket failed to connect."));
     });
-    if (!response.ok || !response.body) throw new Error('Unable to open the orchestration stream.');
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    while (true) {
-      const { value, done } = await reader.read();
-      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-      const frames = buffer.split('\n\n');
-      buffer = frames.pop() || '';
-      for (const frame of frames) {
-        const event = frame.match(/^event: (.+)$/m)?.[1] || 'message';
-        const raw = frame.match(/^data: (.+)$/m)?.[1];
-        if (raw) yield { event, data: JSON.parse(raw) };
+
+    // Trigger backend processing
+    apiClient.post('/orchestrator/run', data).then((res) => {
+      eventQueue.push({ event: 'result', data: res.data });
+      if (resolveNext) resolveNext();
+      ws.close();
+    }).catch((err) => {
+      eventQueue.push({ event: 'error', data: { detail: err.message || 'Stream failed' } });
+      if (resolveNext) resolveNext();
+      ws.close();
+    });
+
+    while (!isDone || eventQueue.length > 0) {
+      if (eventQueue.length > 0) {
+        yield eventQueue.shift()!;
+      } else if (wsError) {
+        throw wsError;
+      } else if (!isDone) {
+        await new Promise<void>((resolve) => { resolveNext = resolve; });
       }
-      if (done) break;
     }
   },
 
