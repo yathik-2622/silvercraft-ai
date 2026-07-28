@@ -1,12 +1,13 @@
-from motor.motor_asyncio import AsyncIOMotorClient
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 from config import settings
 from core.logging import get_logger
+from typing import Optional
 
 logger = get_logger(__name__)
 
 class _DB:
-    client: AsyncIOMotorClient = None
-    db = None
+    client: Optional[AsyncIOMotorClient] = None
+    db: Optional[AsyncIOMotorDatabase] = None
 
 _db = _DB()
 

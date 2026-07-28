@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Bot, ChevronDown, ChevronLeft, ChevronRight, Copy, Database, FileText, FileUp, GitBranch, Layers, LoaderCircle, PanelRightClose, PanelRightOpen, Pencil, Plus, RotateCcw, Search, Send, Sparkles, Table2, Trash2, X } from 'lucide-react';
+import { Bot, BrainCircuit, ChevronDown, ChevronLeft, ChevronRight, Copy, Database, FileText, FileUp, GitBranch, Layers, LoaderCircle, PanelRightClose, PanelRightOpen, Pencil, Plus, RotateCcw, Search, Send, Sparkles, Table2, Trash2, X } from 'lucide-react';
 import { artifactsApi, orchestratorApi, projectsApi, sessionsApi, settingsApi, skillsApi, workflowsApi } from '../api/client';
 import { FollowUpActions } from '../components/studio/FollowUpActions';
 import { IconButton } from '../components/studio/IconButton';
@@ -52,6 +52,8 @@ export const StudioPage: React.FC = () => {
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
   const [isAppLoading, setIsAppLoading] = useState(true);
   const [isChatLoading, setIsChatLoading] = useState(false);
+  const [showReasoning, setShowReasoning] = useState(false);
+  const [reasoningSteps, setReasoningSteps] = useState<Array<{ id: string; type: string; title: string; detail?: string; agent?: string; tool?: string; timestamp: string }>>([]);
   
   const greeting = useMemo(() => {
     const greetings = [
@@ -60,7 +62,14 @@ export const StudioPage: React.FC = () => {
       { title: "Architect your next data product.", subtitle: "From source analysis to physical DDL, I'm here to assist you at every stage." },
       { title: "Ready to map your business?", subtitle: "Describe your entities and relationships, and I'll generate the target state." }
     ];
-    return greetings[Math.floor(Math.random() * greetings.length)];
+    const questions = [
+      ['Explain the difference between a foundation and product layer.', 'Profile my customer and order sources.', 'Apply standard naming rules from ADM V1.', 'Create a dimensional model for retail orders.'],
+      ['What is the difference between a foundation layer and a product layer in SilverCraft AI?', 'Can you profile my customer and order source files?', 'How do I apply standard ADM V1 naming conventions?', 'Build a Kimball-style dimensional model for a retail orders dataset.'],
+      ['Describe the foundation vs product layer distinction in data modeling.', 'Run a source analysis on my customer and order data.', 'Enforce ADM V1 naming standards on my logical model.', 'Generate a complete retail dimensional model with facts and dimensions.'],
+      ['When should I use foundation layer vs product layer?', 'Profile my uploaded customer and order tables.', 'Apply ADM V1 naming rules to my entities.', 'Create a full dimensional model for online retail orders.'],
+    ];
+    const index = chatId ? parseInt(chatId.substring(chatId.length - 4), 16) % 4 : 0;
+    return { greeting: greetings[index], starters: questions[index] };
   }, [chatId]);
   
   // A normal reply remains in the transcript. The canvas exists only after a
@@ -168,13 +177,17 @@ export const StudioPage: React.FC = () => {
       } 
       let result: any = null;
       for await (const event of orchestratorApi.stream({ prompt: textToSend, current_stage: stage, workflow_type: 'orchestrator', skills: skills.map((skill) => skill.name), project_id: projectId, workflow_id: workflowId, chat_id: chatId, model_name: selectedModel, schema_context: { project: project?.name, domain: project?.domain, subdomain: project?.sub_domain, attachments: attachments.map((item) => item.name), source_file_ids: attachments.map((item) => item.id), source_connection: project?.source_connects, artifacts } })) {
-        if (event.event === 'activity') setActivity((items) => [...items, event.data.label || event.data.summary || 'Agent activity updated']);
+        if (event.event === 'activity') {
+          setActivity((items) => [...items, event.data.label || event.data.summary || 'Agent activity updated']);
+          setReasoningSteps((items) => [...items, { id: `reasoning-${Date.now()}-${Math.random()}`, type: 'activity', title: event.data.label || event.data.summary || 'Agent activity updated', detail: event.data.status, timestamp: new Date().toISOString() }]);
+        }
         if (['thinking', 'tool_call', 'peer_call', 'gate_ready'].includes(event.event)) {
           let text = '';
-          if (event.event === 'thinking') text = `${event.data.step ? `[${event.data.step}] ` : ''}${event.data.label || event.data.thought || 'Processing...'}`;
-          if (event.event === 'tool_call') text = `Using tool: ${event.data.tool_name || 'unknown'}`;
-          if (event.event === 'peer_call') text = `Delegating to peer: ${event.data.agent_name || 'unknown'}`;
-          if (event.event === 'gate_ready') text = `Gate ready: ${event.data.gate || 'unknown'}`;
+          let detail: string | undefined;
+          if (event.event === 'thinking') { text = `${event.data.step ? `[${event.data.step}] ` : ''}${event.data.label || event.data.thought || 'Processing...'}`; detail = event.data.thought || event.data.label; }
+          if (event.event === 'tool_call') { text = `Using tool: ${event.data.tool_name || 'unknown'}`; detail = event.data.tool_name; }
+          if (event.event === 'peer_call') { text = `Delegating to peer: ${event.data.agent_name || 'unknown'}`; detail = event.data.agent_name; }
+          if (event.event === 'gate_ready') { text = `Gate ready: ${event.data.gate || 'unknown'}`; detail = event.data.gate; }
           setMessages((items) => [...items, { 
             id: `event-${Date.now()}-${Math.random()}`, 
             sender: 'system', 
@@ -183,6 +196,21 @@ export const StudioPage: React.FC = () => {
             eventType: event.event, 
             agentName: event.data.agent_name 
           }]);
+          setReasoningSteps((items) => [...items, { 
+            id: `reasoning-${Date.now()}-${Math.random()}`, 
+            type: event.event, 
+            title: text, 
+            detail, 
+            agent: event.data.agent_name, 
+            tool: event.data.tool_name, 
+            timestamp: new Date().toISOString() 
+          }]);
+        }
+        if (event.event === 'started') {
+          setReasoningSteps((items) => [...items, { id: `reasoning-${Date.now()}-${Math.random()}`, type: 'started', title: 'Orchestration started', detail: event.data.message, timestamp: new Date().toISOString() }]);
+        }
+        if (event.event === 'completed') {
+          setReasoningSteps((items) => [...items, { id: `reasoning-${Date.now()}-${Math.random()}`, type: 'completed', title: 'Stage completed', detail: event.data.summary || event.data.message, agent: event.data.agent_name, timestamp: new Date().toISOString() }]);
         }
         if (event.event === 'error') throw new Error(event.data.detail || event.data.message || 'The orchestration stream failed.');
         if (event.event === 'result') result = event.data;
@@ -212,6 +240,7 @@ export const StudioPage: React.FC = () => {
     } finally { 
       setBusy(false); 
       setActivity([]);
+      setReasoningSteps([]);
     } 
   };
   
@@ -402,7 +431,12 @@ export const StudioPage: React.FC = () => {
           <div className="text-sm font-black text-slate-900">{project?.name || 'Modeling copilot'}</div>
           <div className="text-[10px] font-bold text-slate-500">{project?.domain}{project?.sub_domain ? ` / ${project.sub_domain}` : ''}</div>
         </div>
-        <div className="w-16" />
+        <div className="flex items-center gap-2">
+          <IconButton label="Toggle reasoning" onClick={() => setShowReasoning((value) => !value)}>
+            <BrainCircuit className="h-4 w-4" />
+          </IconButton>
+          <div className="w-16" />
+        </div>
       </header>
       
       <main
@@ -468,10 +502,10 @@ export const StudioPage: React.FC = () => {
                   <div className="inline-flex items-center gap-2 rounded-full border border-[#e67225]/30 bg-[#e67225]/10 px-3 py-1 text-[10px] font-bold uppercase tracking-widest text-[#e67225]">
                     <Sparkles className="h-3 w-3" /> ADM Version 2.0 Ready
                   </div>
-                  <div className="mt-4 text-3xl font-extrabold tracking-tight text-slate-900 sm:text-4xl">{greeting.title}</div>
-                  <p className="mx-auto mt-3 max-w-xl text-sm leading-relaxed text-slate-500">{greeting.subtitle}</p>
+                  <div className="mt-4 text-3xl font-extrabold tracking-tight text-slate-900 sm:text-4xl">{greeting.greeting.title}</div>
+                  <p className="mx-auto mt-3 max-w-xl text-sm leading-relaxed text-slate-500">{greeting.greeting.subtitle}</p>
                   <div className="mt-7 grid gap-3 sm:grid-cols-2">
-                    {['Explain the difference between a foundation and product layer.', 'Profile my customer and order sources.', 'Apply standard naming rules from ADM V1.', 'Create a dimensional model for retail orders.'].map((starter) => (
+                    {greeting.starters.map((starter) => (
                       <button key={starter} onClick={() => void sendPrompt(undefined, starter)} className="rounded-3xl border border-slate-200 bg-slate-50 p-5 text-left text-sm leading-6 text-slate-700 shadow-sm transition duration-300 hover:-translate-y-1 hover:border-[#e67225]/30 hover:bg-slate-100 hover:shadow-[0_10px_20px_-10px_rgba(230,114,37,0.3)]">
                         {starter}
                       </button>
@@ -548,6 +582,37 @@ export const StudioPage: React.FC = () => {
                     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="my-5 rounded-2xl border border-[#e67225]/20 bg-white/70 p-4 shadow-sm">
                       <div className="flex items-center gap-2 text-xs font-bold text-slate-700"><span className="h-2 w-2 animate-pulse rounded-full bg-[#e67225]" /> ADM architect activity</div>
                       <div className="mt-3 space-y-2">{activity.slice(-3).map((item, itemIndex) => <div key={`${item}-${itemIndex}`} className="text-xs text-slate-500">{item}</div>)}</div>
+                    </motion.div>
+                  )}
+                  {showReasoning && reasoningSteps.length > 0 && (
+                    <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="my-5 rounded-2xl border border-slate-200 bg-white/90 p-4 shadow-sm">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2 text-xs font-bold text-slate-700"><BrainCircuit className="h-3.5 w-3.5 text-[#e67225]" /> Chain of Thought</div>
+                        <button onClick={() => setReasoningSteps([])} className="text-[10px] font-bold uppercase tracking-widest text-slate-400 hover:text-slate-600">Clear</button>
+                      </div>
+                      <div className="mt-3 max-h-72 overflow-y-auto space-y-1.5">
+                        {reasoningSteps.map((step) => (
+                          <div key={step.id} className="flex gap-2 text-[11px]">
+                            <div className="mt-0.5 flex-shrink-0">
+                              {step.type === 'started' && <div className="h-2 w-2 rounded-full bg-emerald-500" />}
+                              {step.type === 'thinking' && <div className="h-2 w-2 rounded-full bg-blue-500" />}
+                              {step.type === 'tool_call' && <div className="h-2 w-2 rounded-full bg-amber-500" />}
+                              {step.type === 'peer_call' && <div className="h-2 w-2 rounded-full bg-purple-500" />}
+                              {step.type === 'gate_ready' && <div className="h-2 w-2 rounded-full bg-[#e67225]" />}
+                              {step.type === 'output' && <div className="h-2 w-2 rounded-full bg-slate-900" />}
+                              {step.type === 'completed' && <div className="h-2 w-2 rounded-full bg-emerald-600" />}
+                              {step.type === 'error' && <div className="h-2 w-2 rounded-full bg-rose-500" />}
+                              {step.type === 'activity' && <div className="h-2 w-2 rounded-full bg-slate-400" />}
+                            </div>
+                            <div className="flex-1">
+                              <div className="font-semibold text-slate-700">{step.title}</div>
+                              {step.detail && <div className="text-slate-500">{step.detail}</div>}
+                              {(step.agent || step.tool) && <div className="text-slate-400">{[step.agent, step.tool].filter(Boolean).join(' · ')}</div>}
+                              <div className="text-[9px] text-slate-400">{new Date(step.timestamp).toLocaleTimeString()}</div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
                     </motion.div>
                   )}
                   </AnimatePresence>

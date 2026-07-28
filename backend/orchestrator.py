@@ -25,6 +25,11 @@ try:
     from langchain_google_genai import ChatGoogleGenerativeAI
     LANGGRAPH_AVAILABLE = True
 except ImportError:
+    END = None
+    StateGraph = None
+    HumanMessage = None
+    SystemMessage = None
+    ChatGoogleGenerativeAI = None
     LANGGRAPH_AVAILABLE = False
 
 from config import settings
@@ -109,9 +114,10 @@ def make_agent_node(stage_name: str):
 
         try:
             from langchain_openai import ChatOpenAI
+            from pydantic import SecretStr
             llm = ChatOpenAI(
                 model=settings.LLM_MODEL,
-                api_key=api_key,
+                api_key=SecretStr(api_key),
                 base_url=settings.LLM_BASE_URL,
                 temperature=0.65,
             )
@@ -139,6 +145,8 @@ def make_agent_node(stage_name: str):
 def _build_pipeline():
     if not LANGGRAPH_AVAILABLE:
         return None
+    assert END is not None, "LangGraph END sentinel must be available when LANGGRAPH_AVAILABLE is True"
+    assert StateGraph is not None, "LangGraph StateGraph must be available when LANGGRAPH_AVAILABLE is True"
     graph = StateGraph(PipelineState)
     graph.add_node("source_analysis",  make_agent_node("1-source-analysis"))
     graph.add_node("conceptual",       make_agent_node("2-conceptual"))

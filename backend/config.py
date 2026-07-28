@@ -1,5 +1,6 @@
 from pydantic_settings import BaseSettings
 from typing import Optional
+import os
 
 
 class Settings(BaseSettings):
@@ -28,11 +29,12 @@ class Settings(BaseSettings):
 
     # ── S3-compatible Blob Store (MinIO locally) ──────────────────────────────
     # Per BUILD_SPEC §4.1 — raw uploaded files + generated artifacts
-    BLOB_STORE_ENDPOINT: str = "http://localhost:9000"
+    BLOB_STORE_ENDPOINT: str = ""
     BLOB_STORE_ACCESS_KEY: str = "minioadmin"
     BLOB_STORE_SECRET_KEY: str = "minioadmin"
     BLOB_STORE_BUCKET: str = "silvercraft-files"
     BLOB_STORE_REGION: str = "us-east-1"
+    BLOB_STORE_LOCAL_PATH: Optional[str] = os.path.join(os.getcwd(), "blob_store")
 
     # ── PostgreSQL Metastore (explicit push target — NOT the app DB) ──────────
     # Per BUILD_SPEC §4.1 Exception #1: only written to on owner-gated push.
