@@ -61,20 +61,19 @@ async def extract_and_store_memory(project_id: str, message: str, user_id: str) 
             return []
 
         # Store in Mongo
-        async for db in get_db():
-            docs = [
-                {
-                    "project_id": project_id,
-                    "entity": entity,
-                    "source_message": message,
-                    "extracted_by": user_id,
-                    "extracted_at": datetime.utcnow()
-                }
-                for entity in entities
-            ]
-            if docs:
-                await db["memory_entities"].insert_many(docs)
-            break # get_db is a generator yielding once
+        db = get_db()
+        docs = [
+            {
+                "project_id": project_id,
+                "entity": entity,
+                "source_message": message,
+                "extracted_by": user_id,
+                "extracted_at": datetime.utcnow()
+            }
+            for entity in entities
+        ]
+        if docs:
+            await db["memory_entities"].insert_many(docs)
 
         return entities
 
@@ -85,8 +84,7 @@ async def extract_and_store_memory(project_id: str, message: str, user_id: str) 
 
 async def get_project_memories(project_id: str, limit: int = 20) -> List[str]:
     """Retrieves the most recent memory entities for a project."""
-    async for db in get_db():
-        cursor = db["memory_entities"].find({"project_id": project_id}).sort("extracted_at", -1).limit(limit)
-        docs = await cursor.to_list(length=limit)
-        return [doc["entity"] for doc in docs]
-    return []
+    db = get_db()
+    cursor = db["memory_entities"].find({"project_id": project_id}).sort("extracted_at", -1).limit(limit)
+    docs = await cursor.to_list(length=limit)
+    return [doc["entity"] for doc in docs]

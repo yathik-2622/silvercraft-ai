@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { FolderKanban, Layers, LogOut, Pencil, Plus, Settings, Share2, Trash2, Users, X, Sparkles, Database } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { motion, AnimatePresence } from 'framer-motion';
 import { projectsApi, settingsApi } from '../api/client';
 import { useAuthStore } from '../store/useAuthStore';
 
@@ -15,12 +16,14 @@ export const DashboardPage: React.FC = () => {
   const [section, setSection] = useState<'owned' | 'shared'>('owned'); const [showProject, setShowProject] = useState(false); const [showSettings, setShowSettings] = useState(false);
   const [form, setForm] = useState(initialForm); const [editing, setEditing] = useState<Project | null>(null); const [provider, setProvider] = useState({ provider: 'platform', base_url: '', default_model: 'gpt-4o', api_key: '' });
   const [saving, setSaving] = useState(false); const [error, setError] = useState('');
+  const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
   const load = async () => { try { const response = await projectsApi.grouped(); setOwned(response.data.owned_projects ?? []); setShared(response.data.collaborator_projects ?? []); } catch (e: any) { setError(e.response?.data?.detail || 'Unable to load projects.'); } };
   useEffect(() => { void load(); }, []);
   const openCreate = () => { setEditing(null); setForm(initialForm); setShowProject(true); };
   const editProject = (project: Project) => { setEditing(project); setForm({ name: project.name, domain: project.domain ?? '', sub_domain: project.sub_domain ?? '', description: project.description ?? '', layer: project.layer ?? 'foundation', member: '', members: project.collaborators ?? [] }); setShowProject(true); };
   const saveProject = async (event: React.FormEvent) => { event.preventDefault(); setSaving(true); try { const payload = { name: form.name, domain: form.domain, sub_domain: form.sub_domain, description: form.description, layer: form.layer, collaborators: form.members }; if (editing) await projectsApi.update(editing.id, payload); else await projectsApi.create({ ...payload, execution_flow: 'custom', workflow_mode: 'orchestrator' }); setShowProject(false); await load(); } catch (e: any) { setError(e.response?.data?.detail || 'Unable to save project.'); } finally { setSaving(false); } };
-  const deleteProject = async (project: Project) => { if (!window.confirm(`Delete “${project.name}”? This removes its MongoDB project record.`)) return; try { await projectsApi.delete(project.id); await load(); } catch (e: any) { setError(e.response?.data?.detail || 'Unable to delete project.'); } };
+  const deleteProject = (project: Project) => setProjectToDelete(project);
+  const executeDeleteProject = async () => { if (!projectToDelete) return; try { await projectsApi.delete(projectToDelete.id); await load(); setProjectToDelete(null); } catch (e: any) { setError(e.response?.data?.detail || 'Unable to delete project.'); setProjectToDelete(null); } };
   const openSettings = async () => { try { const response = await settingsApi.get(); setProvider({ provider: response.data.settings.provider ?? 'platform', base_url: response.data.settings.base_url ?? '', default_model: response.data.settings.default_model ?? 'gpt-4o', api_key: '' }); setShowSettings(true); } catch { setError('Unable to load LLM settings.'); } };
   const saveSettings = async (event: React.FormEvent) => { event.preventDefault(); try { await settingsApi.update(provider); setShowSettings(false); } catch (e: any) { setError(e.response?.data?.detail || 'Unable to save LLM settings.'); } };
   const current = section === 'owned' ? owned : shared;
@@ -81,6 +84,18 @@ export const DashboardPage: React.FC = () => {
           </button>
         </div>
 
+        {loading ? (
+          <div className="mt-8 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+            {[1, 2, 3, 4, 5, 6].map((i) => (
+              <div key={i} className="h-44 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+                <div className="flex h-10 w-10 animate-pulse items-center justify-center rounded-2xl bg-slate-100" />
+                <div className="mt-6 h-5 w-1/2 animate-pulse rounded-full bg-slate-100" />
+                <div className="mt-3 h-3 w-full animate-pulse rounded-full bg-slate-50" />
+                <div className="mt-2 h-3 w-4/5 animate-pulse rounded-full bg-slate-50" />
+              </div>
+            ))}
+          </div>
+        ) : (
         <div className="mt-8 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
           {current.map((project) => (
             <article key={project.id} onClick={() => navigate(`/project/${project.id}/studio`)} className="group cursor-pointer rounded-3xl border border-slate-200 bg-white p-6 shadow-sm transition duration-300 hover:-translate-y-1.5 hover:border-slate-300 hover:shadow-xl">
@@ -130,6 +145,7 @@ export const DashboardPage: React.FC = () => {
             </div>
           )}
         </div>
+        )}
       </main>
 
       {/* Modals with updated dark UI */}
@@ -219,6 +235,22 @@ export const DashboardPage: React.FC = () => {
           <button onClick={() => setError('')} className="rounded-full p-1 hover:bg-rose-900"><X className="h-3 w-3" /></button>
         </div>
       )}
+
+      {/* Delete Project Modal */}
+      <AnimatePresence>
+        {projectToDelete && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm">
+            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="w-full max-w-sm rounded-3xl border border-slate-200 bg-white p-6 shadow-2xl">
+              <h3 className="text-lg font-black text-slate-900">Delete Project</h3>
+              <p className="mt-2 text-sm text-slate-500">Are you sure you want to delete “{projectToDelete.name}”? This removes its MongoDB project record and cannot be undone.</p>
+              <div className="mt-6 flex justify-end gap-2">
+                <button onClick={() => setProjectToDelete(null)} className="rounded-xl px-4 py-2 text-xs font-bold text-slate-500 hover:bg-slate-50">Cancel</button>
+                <button onClick={() => void executeDeleteProject()} className="rounded-xl bg-red-500 px-4 py-2 text-xs font-bold text-white hover:bg-red-600">Delete</button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };

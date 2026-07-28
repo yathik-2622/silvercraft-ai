@@ -21,3 +21,4 @@ langchain-openai==0.2.9
 # ADM 2.0 specific
 celery==5.4.0
 redis==5.2.0
+boto3==1.34.144

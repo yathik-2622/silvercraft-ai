@@ -46,6 +46,22 @@ export const StudioPage: React.FC = () => {
   const [error, setError] = useState(''); 
   const [showConnection, setShowConnection] = useState(false); 
   const [connection, setConnection] = useState({ provider: 'PostgreSQL', host: '', database: '', username: '', password: '' });
+  const [chatToRename, setChatToRename] = useState<Chat | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+  const [chatToDelete, setChatToDelete] = useState<Chat | null>(null);
+  const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
+  const [isAppLoading, setIsAppLoading] = useState(true);
+  const [isChatLoading, setIsChatLoading] = useState(false);
+  
+  const greeting = useMemo(() => {
+    const greetings = [
+      { title: "Design your data foundation.", subtitle: "Bring in a source, describe the outcome, and I'll prepare a dimensional model." },
+      { title: "Let's model your data.", subtitle: "Upload a schema or describe your business process to start building entities." },
+      { title: "Architect your next data product.", subtitle: "From source analysis to physical DDL, I'm here to assist you at every stage." },
+      { title: "Ready to map your business?", subtitle: "Describe your entities and relationships, and I'll generate the target state." }
+    ];
+    return greetings[Math.floor(Math.random() * greetings.length)];
+  }, [chatId]);
   
   // A normal reply remains in the transcript. The canvas exists only after a
   // specialist returns a reviewable modeling artifact.
@@ -56,12 +72,17 @@ export const StudioPage: React.FC = () => {
   
   const persist = (id: string, sender: Message['sender'], text: string, stage = stages[0].id) => sessionsApi.appendMessage(id, { sender, text, stage });
   const openChat = async (id: string) => { 
-    const [response, artifactResponse] = await Promise.all([sessionsApi.getChat(id), artifactsApi.list(id)]);
-    setChatId(id); 
-    setMessages(response.data.messages ?? []); 
-    setAttachments((response.data.attachments ?? []).map((file: any) => ({ id: file.file_id, name: file.filename })));
-    setArtifacts((artifactResponse.data ?? []).map((artifact: any) => ({ id: artifact.id, title: artifact.title, stage: artifact.stage, content: artifact.content, status: artifact.status })));
-    setExpanded([...new Set((artifactResponse.data ?? []).map((artifact: any) => artifact.stage))]);
+    setIsChatLoading(true);
+    try {
+      const [response, artifactResponse] = await Promise.all([sessionsApi.getChat(id), artifactsApi.list(id)]);
+      setChatId(id); 
+      setMessages(response.data.messages ?? []); 
+      setAttachments((response.data.attachments ?? []).map((file: any) => ({ id: file.file_id, name: file.filename })));
+      setArtifacts((artifactResponse.data ?? []).map((artifact: any) => ({ id: artifact.id, title: artifact.title, stage: artifact.stage, content: artifact.content, status: artifact.status })));
+      setExpanded([...new Set((artifactResponse.data ?? []).map((artifact: any) => artifact.stage))]);
+    } finally {
+      setIsChatLoading(false);
+    }
   };
   const refreshChats = async (preferred = '') => { 
     const response = await sessionsApi.listChats(projectId); 
@@ -73,6 +94,7 @@ export const StudioPage: React.FC = () => {
   useEffect(() => { 
     if (!projectId) return; 
     const load = async () => { 
+      setIsAppLoading(true);
       try { 
         const [projectResponse, flows, availableSkills, modelResponse] = await Promise.all([projectsApi.get(projectId), workflowsApi.listForProject(projectId), skillsApi.list(), settingsApi.discoverModels()]); 
         setProject(projectResponse.data); 
@@ -95,7 +117,9 @@ export const StudioPage: React.FC = () => {
         } 
       } catch (e: any) { 
         setError(e.response?.data?.detail || 'Unable to open the copilot.'); 
-      } 
+      } finally {
+        setIsAppLoading(false);
+      }
     }; 
     void load(); 
   }, [projectId]);
@@ -147,7 +171,7 @@ export const StudioPage: React.FC = () => {
         if (event.event === 'activity') setActivity((items) => [...items, event.data.label || event.data.summary || 'Agent activity updated']);
         if (['thinking', 'tool_call', 'peer_call', 'gate_ready'].includes(event.event)) {
           let text = '';
-          if (event.event === 'thinking') text = `Thinking... ${event.data.thought || ''}`;
+          if (event.event === 'thinking') text = `${event.data.step ? `[${event.data.step}] ` : ''}${event.data.label || event.data.thought || 'Processing...'}`;
           if (event.event === 'tool_call') text = `Using tool: ${event.data.tool_name || 'unknown'}`;
           if (event.event === 'peer_call') text = `Delegating to peer: ${event.data.agent_name || 'unknown'}`;
           if (event.event === 'gate_ready') text = `Gate ready: ${event.data.gate || 'unknown'}`;
@@ -199,16 +223,22 @@ export const StudioPage: React.FC = () => {
     setAttachments([]); 
     setArtifacts([]); 
   };
-  const renameChat = async (chat: Chat) => { 
-    const title = window.prompt('Chat name', chat.title)?.trim(); 
-    if (!title) return; 
-    await sessionsApi.renameChat(chat.id, title); 
-    await refreshChats(chat.id); 
+  const renameChat = (chat: Chat) => { 
+    setChatToRename(chat);
+    setRenameValue(chat.title);
   };
-  const removeChat = async (chat: Chat) => { 
-    if (!window.confirm(`Delete “${chat.title}” from MongoDB?`)) return; 
-    await sessionsApi.deleteChat(chat.id); 
-    await refreshChats(); 
+  const executeRename = async () => {
+    if (!chatToRename || !renameValue.trim()) return;
+    await sessionsApi.renameChat(chatToRename.id, renameValue.trim()); 
+    await refreshChats(chatToRename.id);
+    setChatToRename(null);
+  };
+  const removeChat = (chat: Chat) => setChatToDelete(chat);
+  const executeDelete = async () => {
+    if (!chatToDelete) return;
+    await sessionsApi.deleteChat(chatToDelete.id); 
+    await refreshChats();
+    setChatToDelete(null);
   };
   const upload = async (files: FileList | null) => { 
     if (!files?.length) return; 
@@ -341,6 +371,21 @@ export const StudioPage: React.FC = () => {
     </motion.section>
   );
 
+  if (isAppLoading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-50">
+        <div className="flex flex-col items-center gap-4">
+          <div className="relative flex h-16 w-16 items-center justify-center">
+            <div className="absolute inset-0 animate-ping rounded-full bg-[#e67225]/20" />
+            <div className="absolute inset-2 animate-spin rounded-full border-4 border-[#e67225] border-t-transparent" />
+            <Layers className="h-5 w-5 text-[#e67225]" />
+          </div>
+          <div className="text-xs font-bold uppercase tracking-widest text-slate-500">Initializing ADM Studio...</div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="h-screen overflow-hidden bg-slate-50 text-slate-800 font-sans selection:bg-[#e67225]/30">
       {/* Background ambient glow */}
@@ -423,8 +468,8 @@ export const StudioPage: React.FC = () => {
                   <div className="inline-flex items-center gap-2 rounded-full border border-[#e67225]/30 bg-[#e67225]/10 px-3 py-1 text-[10px] font-bold uppercase tracking-widest text-[#e67225]">
                     <Sparkles className="h-3 w-3" /> ADM Version 2.0 Ready
                   </div>
-                  <div className="mt-4 text-3xl font-extrabold tracking-tight text-slate-900 sm:text-4xl">Assisted Data Modeling</div>
-                  <p className="mx-auto mt-3 max-w-xl text-sm leading-relaxed text-slate-500">Bring in a source, describe the outcome, and ADM will prepare a reviewable model through four gated stages.</p>
+                  <div className="mt-4 text-3xl font-extrabold tracking-tight text-slate-900 sm:text-4xl">{greeting.title}</div>
+                  <p className="mx-auto mt-3 max-w-xl text-sm leading-relaxed text-slate-500">{greeting.subtitle}</p>
                   <div className="mt-7 grid gap-3 sm:grid-cols-2">
                     {['Explain the difference between a foundation and product layer.', 'Profile my customer and order sources.', 'Apply standard naming rules from ADM V1.', 'Create a dimensional model for retail orders.'].map((starter) => (
                       <button key={starter} onClick={() => void sendPrompt(undefined, starter)} className="rounded-3xl border border-slate-200 bg-slate-50 p-5 text-left text-sm leading-6 text-slate-700 shadow-sm transition duration-300 hover:-translate-y-1 hover:border-[#e67225]/30 hover:bg-slate-100 hover:shadow-[0_10px_20px_-10px_rgba(230,114,37,0.3)]">
@@ -435,9 +480,24 @@ export const StudioPage: React.FC = () => {
                 </div>
               </div>
             ) : (
-              <div className="mx-auto max-w-4xl py-8 overflow-x-hidden">
-                <AnimatePresence initial={false}>
-                  {messages.map((message, index) => (
+              <AnimatePresence mode="wait">
+                <motion.div 
+                  key={chatId}
+                  initial={{ opacity: 0, x: -15 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: 15 }}
+                  transition={{ duration: 0.2 }}
+                  className="mx-auto max-w-4xl py-8 overflow-x-hidden"
+                >
+                  <AnimatePresence initial={false}>
+                  {isChatLoading ? (
+                    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex min-h-[300px] items-center justify-center">
+                      <div className="flex flex-col items-center gap-4">
+                        <div className="h-8 w-8 animate-spin rounded-full border-4 border-slate-200 border-t-[#e67225]" />
+                        <div className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Loading context...</div>
+                      </div>
+                    </motion.div>
+                  ) : messages.map((message, index) => (
                     <motion.article 
                       key={message.id}
                       initial={{ opacity: 0, y: 15, scale: 0.95 }}
@@ -446,15 +506,25 @@ export const StudioPage: React.FC = () => {
                       className={`group flex gap-4 py-6 ${message.sender === 'user' ? 'justify-end' : ''}`}
                     >
                       <div className={`min-w-0 ${message.sender === 'user' ? 'max-w-[85%] text-right' : 'flex-1'}`}>
-                        {message.sender !== 'user' && (
+                        {message.sender !== 'user' && message.sender !== 'system' && (
                           <div className="mb-2 flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.18em] text-slate-500">
                             <Bot className="h-3.5 w-3.5 text-[#e67225]" />
-                            {message.sender === 'system' ? 'System' : 'SilverCraft copilot'}
+                            SilverCraft copilot
                           </div>
                         )}
-                        <div className={`whitespace-pre-wrap text-[15px] leading-relaxed ${message.sender === 'user' ? 'inline-block rounded-3xl bg-[#e67225] px-5 py-3 text-white shadow-md' : message.sender === 'system' ? 'text-rose-600' : 'prose prose-sm max-w-none text-slate-700 prose-strong:text-slate-900 prose-a:text-[#e67225]'}`}>
-                          {message.sender === 'assistant' ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.text}</ReactMarkdown> : message.text}
-                        </div>
+                        {message.sender === 'system' ? (
+                          <div className="mb-2 flex flex-col gap-1.5 border-l-2 border-slate-200 py-1 pl-4 opacity-70 transition hover:opacity-100">
+                             <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-slate-400">
+                               <Sparkles className="h-3 w-3 text-[#e67225]" />
+                               {message.eventType === 'thinking' ? 'Reasoning' : message.eventType === 'tool_call' ? 'Tool Execution' : message.eventType === 'peer_call' ? 'Delegating' : 'System Event'}
+                             </div>
+                             <div className="text-xs font-medium text-slate-500">{message.text}</div>
+                          </div>
+                        ) : (
+                          <div className={`whitespace-pre-wrap text-[15px] leading-relaxed ${message.sender === 'user' ? 'inline-block rounded-3xl bg-[#e67225] px-5 py-3 text-white shadow-md' : 'prose prose-sm max-w-none text-slate-700 prose-strong:text-slate-900 prose-a:text-[#e67225]'}`}>
+                            {message.sender === 'assistant' ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.text}</ReactMarkdown> : message.text}
+                          </div>
+                        )}
                         {message.sender === 'assistant' && index === messages.length - 1 && (
                           <FollowUpActions onSelect={(followUp) => void sendPrompt(message.stage, followUp)} />
                         )}
@@ -473,15 +543,16 @@ export const StudioPage: React.FC = () => {
                         </div>
                       </div>
                     </motion.article>
-                  ))}
+                  )))}
                   {busy && (
                     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="my-5 rounded-2xl border border-[#e67225]/20 bg-white/70 p-4 shadow-sm">
                       <div className="flex items-center gap-2 text-xs font-bold text-slate-700"><span className="h-2 w-2 animate-pulse rounded-full bg-[#e67225]" /> ADM architect activity</div>
                       <div className="mt-3 space-y-2">{activity.slice(-3).map((item, itemIndex) => <div key={`${item}-${itemIndex}`} className="text-xs text-slate-500">{item}</div>)}</div>
                     </motion.div>
                   )}
-                </AnimatePresence>
-              </div>
+                  </AnimatePresence>
+                </motion.div>
+              </AnimatePresence>
             )}
           </div>
 
@@ -489,12 +560,24 @@ export const StudioPage: React.FC = () => {
           <div className={messages.length === 0 ? "absolute inset-x-0 top-[78%] z-10 -translate-y-1/2 px-5" : "px-5 pb-4 pt-2"}>
             <div className="mx-auto max-w-3xl rounded-2xl border border-slate-200 bg-white/90 shadow-[0_12px_35px_rgba(23,20,15,0.12)] backdrop-blur-2xl">
               <div className="flex flex-wrap items-center gap-2 px-4 pt-2.5">
-                <select value={selectedModel} onChange={(e) => setModel(e.target.value)} className="max-w-52 rounded-full border border-slate-200 bg-slate-50 px-4 py-1.5 text-xs font-semibold text-slate-700 outline-none focus:border-[#e67225]/50">
-                  <option value="">Platform model</option>
-                  {models.map((item) => (
-                    <option key={item.value || item.id} value={item.value || item.id}>{item.label || item.name || item.value || item.id}</option>
-                  ))}
-                </select>
+                <div className="relative">
+                  {modelDropdownOpen && <div className="fixed inset-0 z-40" onClick={() => setModelDropdownOpen(false)} />}
+                  <button onClick={() => setModelDropdownOpen((val) => !val)} className="relative z-50 flex items-center justify-between min-w-40 max-w-52 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:border-slate-300 hover:bg-slate-100 transition outline-none">
+                    <span className="truncate">{models.find((m) => (m.value || m.id) === selectedModel)?.label || selectedModel || 'Platform model'}</span>
+                    <ChevronDown className="ml-1.5 h-3 w-3 text-slate-400" />
+                  </button>
+                  <AnimatePresence>
+                    {modelDropdownOpen && (
+                      <motion.div initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -5 }} className="absolute bottom-full left-0 mb-2 w-56 max-h-48 overflow-y-auto rounded-2xl border border-slate-200 bg-white/90 p-1.5 shadow-lg backdrop-blur-xl z-50">
+                        {models.map((item) => (
+                          <button key={item.value || item.id} onClick={() => { setModel(item.value || item.id || ''); setModelDropdownOpen(false); }} className={`w-full text-left px-3 py-2 text-[11px] font-semibold rounded-xl transition ${selectedModel === (item.value || item.id) ? 'bg-[#e67225]/10 text-[#e67225]' : 'text-slate-600 hover:bg-slate-50'}`}>
+                            {item.label || item.name || item.value || item.id}
+                          </button>
+                        ))}
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
                 <button onClick={() => uploadRef.current?.click()} disabled={busy} className="rounded-full border border-slate-200 bg-slate-50 px-4 py-1.5 text-xs font-semibold text-slate-700 hover:border-slate-300 hover:bg-slate-100 transition">
                   <FileUp className="mr-1.5 inline h-3.5 w-3.5" />Attach files{attachments.length ? ` (${attachments.length})` : ''}
                 </button>
@@ -612,6 +695,38 @@ export const StudioPage: React.FC = () => {
           <button onClick={() => setError('')} className="rounded-full p-1 hover:bg-rose-900"><X className="h-3 w-3" /></button>
         </div>
       )}
+      
+      {/* Rename Chat Modal */}
+      <AnimatePresence>
+        {chatToRename && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm">
+            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="w-full max-w-sm rounded-3xl border border-slate-200 bg-white p-6 shadow-2xl">
+              <h3 className="text-lg font-black text-slate-900">Rename Chat</h3>
+              <input value={renameValue} onChange={(e) => setRenameValue(e.target.value)} className="mt-4 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm text-slate-900 outline-none focus:border-[#e67225]/50" autoFocus onKeyDown={(e) => { if (e.key === 'Enter') void executeRename(); }} />
+              <div className="mt-6 flex justify-end gap-2">
+                <button onClick={() => setChatToRename(null)} className="rounded-xl px-4 py-2 text-xs font-bold text-slate-500 hover:bg-slate-50">Cancel</button>
+                <button onClick={() => void executeRename()} className="rounded-xl bg-[#e67225] px-4 py-2 text-xs font-bold text-white hover:bg-[#c95411]">Save</button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Delete Chat Modal */}
+      <AnimatePresence>
+        {chatToDelete && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm">
+            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="w-full max-w-sm rounded-3xl border border-slate-200 bg-white p-6 shadow-2xl">
+              <h3 className="text-lg font-black text-slate-900">Delete Chat</h3>
+              <p className="mt-2 text-sm text-slate-500">Are you sure you want to delete “{chatToDelete.title}”? This action cannot be undone.</p>
+              <div className="mt-6 flex justify-end gap-2">
+                <button onClick={() => setChatToDelete(null)} className="rounded-xl px-4 py-2 text-xs font-bold text-slate-500 hover:bg-slate-50">Cancel</button>
+                <button onClick={() => void executeDelete()} className="rounded-xl bg-red-500 px-4 py-2 text-xs font-bold text-white hover:bg-red-600">Delete</button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };
