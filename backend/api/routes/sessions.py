@@ -11,6 +11,7 @@ from api.routes.auth import get_current_user
 from api.routes.projects import _get_authorized_project
 from database import get_db
 from models.user import UserModel
+from core.serialization import mongo_json
 
 router = APIRouter()
 
@@ -66,7 +67,7 @@ async def list_chats(project_id: str, current_user: UserModel = Depends(get_curr
 @router.get("/chats/{chat_id}")
 async def get_chat(chat_id: str, current_user: UserModel = Depends(get_current_user), db=Depends(get_db)):
     chat = await _chat_for_user(chat_id, str(current_user.id), db)
-    return {"id": str(chat["_id"]), "project_id": chat["project_id"], "title": chat["title"], "messages": chat.get("messages", []), "attachments": chat.get("attachments", []), "preferences": chat.get("preferences", {}), "updated_at": chat["updated_at"]}
+    return mongo_json({"id": str(chat["_id"]), "project_id": chat["project_id"], "title": chat["title"], "messages": chat.get("messages", []), "attachments": chat.get("attachments", []), "preferences": chat.get("preferences", {}), "updated_at": chat["updated_at"]})
 
 
 @router.get("/chats/{chat_id}/history")
@@ -75,7 +76,7 @@ async def get_chat_history(chat_id: str, limit: int = 200, current_user: UserMod
     chat = await _chat_for_user(chat_id, str(current_user.id), db)
     safe_limit = max(1, min(limit, 500))
     messages = chat.get("messages", [])[-safe_limit:]
-    return {"chat_id": chat_id, "title": chat["title"], "messages": messages, "count": len(messages)}
+    return mongo_json({"chat_id": chat_id, "title": chat["title"], "messages": messages, "count": len(messages)})
 
 
 @router.put("/chats/{chat_id}")
@@ -99,7 +100,7 @@ async def delete_chat(chat_id: str, current_user: UserModel = Depends(get_curren
 async def list_agent_runs(project_id: str, current_user: UserModel = Depends(get_current_user), db=Depends(get_db)):
     await _get_authorized_project(project_id, str(current_user.id), db)
     runs = await db["agent_runs"].find({"project_id": project_id}).sort("created_at", -1).to_list(length=200)
-    return [{**{key: value for key, value in run.items() if key != "_id"}, "id": str(run["_id"])} for run in runs]
+    return [mongo_json({**{key: value for key, value in run.items() if key != "_id"}, "id": str(run["_id"])}) for run in runs]
 
 
 @router.post("/chats/{chat_id}/messages", status_code=201)

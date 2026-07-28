@@ -39,6 +39,7 @@ class ModelingState(TypedDict, total=False):
     master_brief: str
     output: str
     response_mode: str
+    intake_required: bool
 
 
 async def _chat_completion(runtime: dict, system_prompt: str, user_prompt: str) -> str:
@@ -94,10 +95,29 @@ async def _supervisor_node(state: ModelingState) -> dict:
     return {"master_brief": raw.replace("CHAT:", "", 1).replace("DELEGATE:", "", 1).strip(), "response_mode": mode}
 
 
+async def _intake_node(state: ModelingState) -> dict:
+    """Ask for a source before Stage 1, rather than producing an empty analysis artifact."""
+    if state["stage"] != "1-source-analysis":
+        return {"intake_required": False}
+    context = state.get("project_context") or {}
+    has_source = bool(context.get("attachments") or context.get("source_connection") or context.get("source_tables") or context.get("artifacts"))
+    prompt = state.get("user_prompt", "").lower()
+    modeling_intent = any(term in prompt for term in ("model", "profile", "analy", "source", "table", "schema", "database", "file"))
+    if modeling_intent and not has_source:
+        return {
+            "intake_required": True,
+            "response_mode": "chat",
+            "master_brief": "Before Source Analysis, choose how to provide the source: **Upload files** or **Connect a database**. Then share the table scope or files you want ADM to analyse.",
+        }
+    return {"intake_required": False}
+
+
 async def _specialist_node(state: ModelingState) -> dict:
     instruction = (
         f"You are {state['agent_name']}. {state['agent_instruction']}\n"
-        "Return an editable Markdown artifact with headings: Findings, Proposed Output, Assumptions, and HITL Question. "
+        "Return valid JSON only, never Markdown. Use the stage shape: source analysis = {tables, relationships, warnings, thinking}; "
+        "conceptual = {concepts, relationships, warnings, thinking}; logical = {entities, relationships, warnings, thinking}; "
+        "physical = {tables, sttm, ddl, warnings, thinking}. Every table/entity must contain a name and columns/attributes when evidence exists. "
         "Never claim to inspect a file, table, or database that has not been supplied.\n\n"
         f"Master delegation brief:\n{state['master_brief']}\n\nApplicable skill Markdown:\n{state['skills_markdown']}"
     )
@@ -112,14 +132,20 @@ def _route_after_supervisor(state: ModelingState) -> str:
     return "chat" if state.get("response_mode") == "chat" else "specialist"
 
 
+def _route_after_intake(state: ModelingState) -> str:
+    return "chat" if state.get("intake_required") else "supervisor"
+
+
 def _build_graph():
     if not LANGGRAPH_AVAILABLE:
         return None
     graph = StateGraph(ModelingState)
+    graph.add_node("intake", _intake_node)
     graph.add_node("supervisor", _supervisor_node)
     graph.add_node("specialist", _specialist_node)
     graph.add_node("chat", _chat_node)
-    graph.set_entry_point("supervisor")
+    graph.set_entry_point("intake")
+    graph.add_conditional_edges("intake", _route_after_intake, {"chat": "chat", "supervisor": "supervisor"})
     graph.add_conditional_edges("supervisor", _route_after_supervisor, {"chat": "chat", "specialist": "specialist"})
     graph.add_edge("chat", END)
     graph.add_edge("specialist", END)

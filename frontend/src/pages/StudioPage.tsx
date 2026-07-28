@@ -7,6 +7,7 @@ import { Bot, ChevronDown, ChevronLeft, ChevronRight, Copy, Database, FileText, 
 import { artifactsApi, orchestratorApi, projectsApi, sessionsApi, settingsApi, skillsApi, workflowsApi } from '../api/client';
 import { FollowUpActions } from '../components/studio/FollowUpActions';
 import { IconButton } from '../components/studio/IconButton';
+import { StructuredCanvas } from '../components/studio/StructuredCanvas';
 
 type Message = { id: string; sender: 'user' | 'assistant' | 'system'; text: string; stage?: string };
 type Artifact = { id: string; title: string; stage: string; content: string; status: 'awaiting_hitl' | 'approved' };
@@ -34,7 +35,7 @@ export const StudioPage: React.FC = () => {
   const [activity, setActivity] = useState<string[]>([]);
   const [historyOpen, setHistoryOpen] = useState(true); 
   const [search, setSearch] = useState(''); 
-  const [view, setView] = useState<'table' | 'graph'>('table'); 
+  const [view, setView] = useState<'erd' | 'attributes' | 'sttm'>('attributes');
   const [artifacts, setArtifacts] = useState<Artifact[]>([]); 
   const [expanded, setExpanded] = useState<string[]>([]); 
   const [skillOpen, setSkillOpen] = useState(false); 
@@ -141,7 +142,7 @@ export const StudioPage: React.FC = () => {
         return; 
       } 
       let result: any = null;
-      for await (const event of orchestratorApi.stream({ prompt: textToSend, current_stage: stage, workflow_type: 'orchestrator', skills: skills.map((skill) => skill.name), project_id: projectId, workflow_id: workflowId, chat_id: chatId, model_name: selectedModel, schema_context: { project: project?.name, domain: project?.domain, subdomain: project?.sub_domain, attachments: attachments.map((item) => item.name), artifacts } })) {
+      for await (const event of orchestratorApi.stream({ prompt: textToSend, current_stage: stage, workflow_type: 'orchestrator', skills: skills.map((skill) => skill.name), project_id: projectId, workflow_id: workflowId, chat_id: chatId, model_name: selectedModel, schema_context: { project: project?.name, domain: project?.domain, subdomain: project?.sub_domain, attachments: attachments.map((item) => item.name), source_connection: project?.source_connects, artifacts } })) {
         if (event.event === 'activity') setActivity((items) => [...items, event.data.label || event.data.summary || 'Agent activity updated']);
         if (event.event === 'error') throw new Error(event.data.detail || 'The orchestration stream failed.');
         if (event.event === 'result') result = event.data;
@@ -231,14 +232,11 @@ export const StudioPage: React.FC = () => {
         <div className="flex items-center gap-2">
           {!busy && (
           <div className="flex rounded-lg border border-slate-200 bg-slate-50 p-1">
-            <button onClick={() => setView('table')} className={`rounded-md px-2 py-1 text-xs font-bold transition ${view === 'table' ? 'bg-[#e67225] text-white shadow-sm' : 'text-slate-500 hover:text-slate-900'}`}>
-              <Table2 className="mr-1 inline h-3.5 w-3.5" />
-              Table
-            </button>
-            <button onClick={() => setView('graph')} className={`rounded-md px-2 py-1 text-xs font-bold transition ${view === 'graph' ? 'bg-[#e67225] text-white shadow-sm' : 'text-slate-500 hover:text-slate-900'}`}>
-              <GitBranch className="mr-1 inline h-3.5 w-3.5" />
-              Graph
-            </button>
+            {[['erd', 'ERD', GitBranch], ['attributes', 'Attributes', Table2], ['sttm', 'STTM / DDL', FileText]].map(([key, label, Icon]: any) => (
+              <button key={key} onClick={() => setView(key)} className={`rounded-md px-2 py-1 text-[10px] font-bold transition ${view === key ? 'bg-[#e67225] text-white shadow-sm' : 'text-slate-500 hover:text-slate-900'}`}>
+                <Icon className="mr-1 inline h-3.5 w-3.5" />{label}
+              </button>
+            ))}
           </div>
           )}
           <IconButton label="Close agent canvas" onClick={() => setCanvasOpen(false)}><PanelRightClose className="h-4 w-4" /></IconButton>
@@ -263,18 +261,13 @@ export const StudioPage: React.FC = () => {
             </div>
           </div>
         </div>
-      ) : view === 'graph' ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-3 overflow-auto p-6">
-          {stages.filter((stage) => artifacts.some((item) => item.stage === stage.id)).map((stage, index, list) => (
-            <React.Fragment key={stage.id}>
-              <div className="w-72 rounded-2xl border border-slate-200 bg-white p-4 shadow-xl">
-                <div className="text-xs font-black text-slate-900">{stage.label}</div>
-                <div className="mt-1 text-[11px] text-slate-500">{artifacts.filter((item) => item.stage === stage.id).length} artifact(s)</div>
-              </div>
-              {index < list.length - 1 && <div className="h-8 border-l-2 border-dashed border-slate-300" />}
-            </React.Fragment>
-          ))}
-        </div>
+      ) : artifacts.length > 0 ? (
+        <StructuredCanvas key={`${artifacts.at(-1)?.id || 'empty'}-${view}`} artifact={artifacts.at(-1)} view={view} onSave={(content) => {
+          const artifact = artifacts.at(-1);
+          if (!artifact) return;
+          updateArtifact(artifact, content);
+          if (!artifact.id.startsWith('artifact-')) void artifactsApi.update(artifact.id, content);
+        }} />
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto p-4">
           {stages.map((stage) => { 
@@ -392,14 +385,14 @@ export const StudioPage: React.FC = () => {
           )}
           <div ref={scrollRef} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain px-6 md:px-10">
             {messages.length === 0 ? (
-              <div className="flex min-h-full items-center justify-center py-12">
+              <div className="flex min-h-full items-start justify-center pt-14 pb-12">
                 <div className="w-full max-w-3xl text-center">
                   <div className="inline-flex items-center gap-2 rounded-full border border-[#e67225]/30 bg-[#e67225]/10 px-3 py-1 text-[10px] font-bold uppercase tracking-widest text-[#e67225]">
                     <Sparkles className="h-3 w-3" /> ADM Version 2.0 Ready
                   </div>
-                  <div className="mt-4 text-4xl font-extrabold tracking-tight text-slate-900 sm:text-5xl">Assisted Data Modeling</div>
-                  <p className="mx-auto mt-4 max-w-xl text-sm leading-relaxed text-slate-500">Transform your business requirements into enterprise-grade Foundation (3NF/Data Vault) and Product (Dimensional) layers using Medallion Architecture.</p>
-                  <div className="mt-10 grid gap-4 sm:grid-cols-2">
+                  <div className="mt-4 text-3xl font-extrabold tracking-tight text-slate-900 sm:text-4xl">Assisted Data Modeling</div>
+                  <p className="mx-auto mt-3 max-w-xl text-sm leading-relaxed text-slate-500">Bring in a source, describe the outcome, and ADM will prepare a reviewable model through four gated stages.</p>
+                  <div className="mt-7 grid gap-3 sm:grid-cols-2">
                     {['Explain the difference between a foundation and product layer.', 'Profile my customer and order sources.', 'Apply standard naming rules from ADM V1.', 'Create a dimensional model for retail orders.'].map((starter) => (
                       <button key={starter} onClick={() => void sendPrompt(undefined, starter)} className="rounded-3xl border border-slate-200 bg-slate-50 p-5 text-left text-sm leading-6 text-slate-700 shadow-sm transition duration-300 hover:-translate-y-1 hover:border-[#e67225]/30 hover:bg-slate-100 hover:shadow-[0_10px_20px_-10px_rgba(230,114,37,0.3)]">
                         {starter}
@@ -460,9 +453,9 @@ export const StudioPage: React.FC = () => {
           </div>
 
           {/* Composer */}
-          <div className={messages.length === 0 ? "absolute inset-x-0 top-1/2 z-10 -translate-y-1/2 px-5" : "px-5 pb-5 pt-3"}>
-            <div className="mx-auto max-w-4xl rounded-[32px] border border-slate-200 bg-white/80 shadow-[0_24px_70px_rgba(0,0,0,0.5)] backdrop-blur-2xl">
-              <div className="flex flex-wrap items-center gap-3 px-5 pt-4">
+          <div className={messages.length === 0 ? "absolute inset-x-0 top-[62%] z-10 -translate-y-1/2 px-5" : "px-5 pb-4 pt-2"}>
+            <div className="mx-auto max-w-3xl rounded-2xl border border-slate-200 bg-white/90 shadow-[0_12px_35px_rgba(23,20,15,0.12)] backdrop-blur-2xl">
+              <div className="flex flex-wrap items-center gap-2 px-4 pt-2.5">
                 <select value={selectedModel} onChange={(e) => setModel(e.target.value)} className="max-w-52 rounded-full border border-slate-200 bg-slate-50 px-4 py-1.5 text-xs font-semibold text-slate-700 outline-none focus:border-[#e67225]/50">
                   <option value="">Platform model</option>
                   {models.map((item) => (
@@ -488,7 +481,7 @@ export const StudioPage: React.FC = () => {
                   ))}
                 </div>
               )}
-              <div className="relative px-5 pb-4 pt-3">
+              <div className="relative px-4 pb-2.5 pt-2">
                 <input ref={uploadRef} type="file" multiple className="hidden" onChange={(e) => void upload(e.target.files)} />
                 {skillOpen && (
                   <div className="absolute bottom-[calc(100%+8px)] left-5 right-5 z-20 max-h-60 overflow-auto rounded-3xl border border-slate-200 bg-white p-2 shadow-2xl backdrop-blur-xl">
@@ -501,7 +494,7 @@ export const StudioPage: React.FC = () => {
                     ))}
                   </div>
                 )}
-                <div className="flex flex-col min-h-16 w-full rounded-xl bg-transparent py-2">
+                <div className="flex flex-col w-full rounded-xl bg-transparent py-1">
                   {activeSkill && (
                     <div className="mb-2">
                       <span className="inline-flex items-center gap-1.5 rounded-full bg-[#e67225]/10 px-3 py-1 text-xs font-bold text-[#e67225] border border-[#e67225]/20">
@@ -523,15 +516,15 @@ export const StudioPage: React.FC = () => {
                     }} 
                     onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void sendPrompt(); } }} 
                     placeholder={activeSkill ? "Add instructions for this skill..." : "Ask a question, describe your model, or type / for skills…"}
-                    className="w-full resize-none bg-transparent text-[15px] leading-7 text-slate-900 outline-none placeholder:text-slate-500"
+                    className="w-full resize-none bg-transparent text-sm leading-6 text-slate-900 outline-none placeholder:text-slate-500"
                     rows={composerRows}
                   />
                 </div>
-                <div className="flex items-center justify-between gap-3 pt-2 border-t border-slate-200 mt-2">
+                <div className="flex items-center justify-between gap-3 border-t border-slate-200 pt-2 mt-1">
                   <div className="text-[11px] font-medium text-slate-500">
                     {attachments.length ? `${attachments.length} file(s) attached to this chat` : 'General replies stay in chat. Delegated artifacts open the canvas.'}
                   </div>
-                  <button onClick={() => void sendPrompt()} disabled={busy || !prompt.trim()} className="inline-flex h-10 items-center gap-2 rounded-full bg-[#e67225] px-6 text-sm font-bold text-slate-900 shadow-[0_0_20px_rgba(230,114,37,0.4)] transition duration-300 hover:scale-105 hover:bg-[#cf5e19] disabled:opacity-50 disabled:hover:scale-100">
+                  <button onClick={() => void sendPrompt()} disabled={busy || !prompt.trim()} className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[#e67225] px-3 text-xs font-bold text-white shadow-sm transition duration-300 hover:scale-105 hover:bg-[#cf5e19] disabled:opacity-50 disabled:hover:scale-100">
                     {busy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                     {busy ? 'Working…' : 'Send'}
                   </button>

@@ -11,6 +11,7 @@ from database import get_db
 from models.project import ProjectModel, ProjectCreate, ProjectUpdate, ProjectResponse, ProjectHistoryEntry, ProjectTeamMemberUpdate
 from models.user import UserModel
 from api.routes.auth import get_current_user
+from core.serialization import mongo_json
 
 router = APIRouter()
 
@@ -151,7 +152,7 @@ async def get_project_history(project_id: str, limit: int = 100, current_user: U
     decisions = await db["hitl_decisions"].find({"project_id": project_id}).sort("decided_at", -1).to_list(length=safe_limit)
     entries.extend({"type": "hitl", "created_at": decision.get("decided_at"), "data": {key: value for key, value in decision.items() if key != "_id"}} for decision in decisions)
     entries.sort(key=lambda entry: entry.get("created_at") or datetime.min, reverse=True)
-    return {"project_id": project_id, "entries": entries[:safe_limit]}
+    return mongo_json({"project_id": project_id, "entries": entries[:safe_limit]})
 
 @router.get("/{project_id}", response_model=ProjectResponse)
 async def get_project(project_id: str, current_user: UserModel = Depends(get_current_user), db=Depends(get_db)):

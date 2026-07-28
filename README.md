@@ -1,6 +1,6 @@
 # SilverCraft AI - Data Modeling Platform
 
-SilverCraft AI is a multi-agent data modeling platform for source analysis, conceptual modeling, logical modeling, physical/STTM generation, and knowledge graph handoff. The app uses a React/Vite frontend with a workflow canvas and a FastAPI backend with MongoDB-backed projects, skills, agents, workflows, settings, uploads, exports, and orchestrator endpoints.
+SilverCraft AI is a chat-first ADM workspace. It uses a React/Vite frontend, FastAPI, MongoDB, and a LangGraph flow with an IntakeAgent, a master supervisor, and one stage specialist per run. Projects, chats, messages, files, skills, agent-run records, and canvas artifacts are stored in MongoDB.
 
 ## Project Structure
 
@@ -112,12 +112,14 @@ http://localhost:3002
 2. On the dashboard, verify **My projects**, **Shared projects**, compact edit/delete actions, and the settings icon.
 3. Keep **Platform provider** selected to use `LLM_*` values from backend `.env`. Do not enter a key in the UI for this mode.
 4. Create a project with name, domain, subdomain, optional description, team emails, and Foundation/Product layer.
-5. Open its card. The chat studio opens without a canvas; it opens only when a delegated agent produces an artifact.
-6. Type `/` to preview approved industry skill Markdown, select a skill, and send a modeling request.
-7. Upload a source file or use **Connect DB**. The screen records connection metadata only; it does not store or echo the password.
-8. Confirm the visible **ADM architect activity** stream appears while the supervisor delegates, then the artifact opens in the matching collapsible stage.
-9. Edit an artifact, click outside the editor to save it, approve its HITL output, switch Table/Graph, create/rename/delete chats, and reload the page to confirm Mongo persistence.
-10. Verify chat history at `GET /api/v1/chats/{chat_id}/history` and the combined project timeline at `GET /api/v1/projects/{project_id}/history` in `/docs`.
+5. Open its card. The chat studio opens without a canvas.
+6. Send “Profile my sources” before uploading files or connecting a database. The IntakeAgent should keep the answer in chat and ask you to choose **Upload files** or **Connect a database**; no canvas should open.
+7. Attach one or more source files, then send a concrete Stage‑1 request. The supervisor delegates to the source specialist and the visible activity stream reports orchestration milestones.
+8. When the specialist returns JSON, the canvas opens. Use **ERD** for table/entity cards and relationships, **Attributes** for columns, and **STTM / DDL** for physical mappings. Click a table/entity title to edit it, then choose **Save**.
+9. Send a general question such as “What is a dimensional model?” It should stay in chat and not open the canvas.
+10. Create, rename, delete, and reopen a chat. Refresh the browser to confirm messages and artifacts come back from MongoDB.
+11. Type `/` in the composer, select a Markdown skill, and send a request. Skills are loaded from `backend/skills/*.md`.
+12. Check `GET /api/v1/chats/{chat_id}/history` and `GET /api/v1/projects/{project_id}/history` in `/docs`.
 
 ## Verification Commands
 
@@ -140,9 +142,11 @@ Health check through the frontend wrapper:
 Invoke-WebRequest -Uri http://localhost:3002/api/health -UseBasicParsing
 ```
 
-## Notes
+## Current architecture and boundaries
 
-- Default mode uses the fixed four-agent pipeline and does not show marketplace agents.
-- Custom and Orchestrator modes support dragging marketplace agents onto the canvas.
-- Local agent labels are hidden on canvas nodes; remote agents still show the A2A tag.
-- Settings intentionally contains only LLM provider configuration.
+- `IntakeAgent` is the first LangGraph node. It checks Stage‑1 requests for uploaded files, source tables, or saved connection metadata before delegation.
+- The master supervisor decides `chat` versus `delegate`. General answers remain in chat; delegated results create canvas artifacts.
+- The active specialist is selected by stage: Source Analysis, Conceptual Modeling, Logical Modeling, or Physical/STTM.
+- The stream endpoint sends visible lifecycle/activity events and a final result. It does **not** yet stream individual LLM tokens.
+- Source database credentials are not persisted by the current connection form; it records masked metadata only.
+- Canvas rendering requires the model to return the documented JSON shape. Existing Markdown artifacts should be regenerated.
