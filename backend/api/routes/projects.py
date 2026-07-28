@@ -135,6 +135,24 @@ async def list_grouped_projects(current_user: UserModel = Depends(get_current_us
         "collaborator_projects": [_to_response(project).model_dump() for project in projects if project.get("owner_id") != user_id],
     }
 
+@router.get("/{project_id}/history")
+async def get_project_history(project_id: str, limit: int = 100, current_user: UserModel = Depends(get_current_user), db=Depends(get_db)):
+    """Project timeline from model snapshots, chats, agent runs, and HITL decisions."""
+    _, project = await _get_authorized_project(project_id, str(current_user.id), db)
+    safe_limit = max(1, min(limit, 300))
+    entries = [
+        {"type": "canvas_snapshot", "created_at": item.get("saved_at"), "data": item}
+        for item in project.get("history", [])
+    ]
+    chats = await db["chats"].find({"project_id": project_id}, {"title": 1, "created_at": 1, "updated_at": 1}).to_list(length=safe_limit)
+    entries.extend({"type": "chat", "created_at": chat.get("updated_at"), "data": {"id": str(chat["_id"]), "title": chat.get("title", "Modeling conversation")}} for chat in chats)
+    runs = await db["agent_runs"].find({"project_id": project_id}).sort("created_at", -1).to_list(length=safe_limit)
+    entries.extend({"type": "agent_run", "created_at": run.get("created_at") or run.get("completed_at"), "data": {key: value for key, value in run.items() if key != "_id"}} for run in runs)
+    decisions = await db["hitl_decisions"].find({"project_id": project_id}).sort("decided_at", -1).to_list(length=safe_limit)
+    entries.extend({"type": "hitl", "created_at": decision.get("decided_at"), "data": {key: value for key, value in decision.items() if key != "_id"}} for decision in decisions)
+    entries.sort(key=lambda entry: entry.get("created_at") or datetime.min, reverse=True)
+    return {"project_id": project_id, "entries": entries[:safe_limit]}
+
 @router.get("/{project_id}", response_model=ProjectResponse)
 async def get_project(project_id: str, current_user: UserModel = Depends(get_current_user), db=Depends(get_db)):
     try:

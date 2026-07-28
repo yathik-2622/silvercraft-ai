@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from urllib.parse import urlparse
 from typing import Any, TypedDict
@@ -71,14 +72,26 @@ async def _chat_completion(runtime: dict, system_prompt: str, user_prompt: str) 
 async def _supervisor_node(state: ModelingState) -> dict:
     prompt = (
         "You are the SilverCraft master orchestrator. First decide whether the user is making a general conversational request "
-        "or requesting data-modeling work. For greetings, product-use questions, and general conversation, answer directly using exactly "
-        "the prefix CHAT:. For modeling work that needs a specialist, use exactly the prefix DELEGATE: followed by a concise delegation brief. "
-        "Preserve user intent, use supplied skills, and require HITL for material assumptions.\n"
+        "or requesting data-modeling work. Return JSON only with these keys: mode (chat or delegate), response (the direct answer for chat "
+        "or the specialist brief for delegate), and missing_inputs (an array). Delegate only when a specialist must create or revise a modeling "
+        "artifact. Preserve user intent, use supplied skills, and identify material assumptions for HITL.\n"
         f"Stage: {state['stage']}\nSpecialist: {state['agent_name']}\nProject context: {state['project_context']}\n"
         f"Skills:\n{state['skills_markdown'] or 'No additional skill selected.'}\n\nUser request:\n{state['user_prompt']}"
     )
-    brief = await _chat_completion(state["runtime"], "Classify and respond exactly as CHAT: <answer> or DELEGATE: <brief>.", prompt)
-    return {"master_brief": brief, "response_mode": "chat" if brief.lstrip().upper().startswith("CHAT:") else "delegate"}
+    raw = await _chat_completion(state["runtime"], "Return valid JSON only; no Markdown fence.", prompt)
+    try:
+        decision = json.loads(raw)
+        mode = "chat" if str(decision.get("mode", "")).lower() == "chat" else "delegate"
+        response = str(decision.get("response", "")).strip()
+        if response:
+            missing = decision.get("missing_inputs") or []
+            suffix = f"\n\nMissing inputs: {', '.join(map(str, missing))}." if mode == "delegate" and missing else ""
+            return {"master_brief": response + suffix, "response_mode": mode}
+    except (TypeError, ValueError, json.JSONDecodeError):
+        pass
+    # Compatibility fallback for OpenAI-compatible gateways that do not honor JSON mode.
+    mode = "chat" if raw.lstrip().upper().startswith("CHAT:") else "delegate"
+    return {"master_brief": raw.replace("CHAT:", "", 1).replace("DELEGATE:", "", 1).strip(), "response_mode": mode}
 
 
 async def _specialist_node(state: ModelingState) -> dict:
@@ -86,13 +99,13 @@ async def _specialist_node(state: ModelingState) -> dict:
         f"You are {state['agent_name']}. {state['agent_instruction']}\n"
         "Return an editable Markdown artifact with headings: Findings, Proposed Output, Assumptions, and HITL Question. "
         "Never claim to inspect a file, table, or database that has not been supplied.\n\n"
-        f"Master delegation brief:\n{state['master_brief'].replace('DELEGATE:', '', 1).strip()}\n\nApplicable skill Markdown:\n{state['skills_markdown']}"
+        f"Master delegation brief:\n{state['master_brief']}\n\nApplicable skill Markdown:\n{state['skills_markdown']}"
     )
     return {"output": await _chat_completion(state["runtime"], instruction, state["user_prompt"])}
 
 
 async def _chat_node(state: ModelingState) -> dict:
-    return {"output": state["master_brief"].replace("CHAT:", "", 1).strip()}
+    return {"output": state["master_brief"].strip()}
 
 
 def _route_after_supervisor(state: ModelingState) -> str:
@@ -152,7 +165,8 @@ async def run_chat_orchestration(db, user_id: str, request: dict[str, Any]) -> d
         return {"reply": output, "stage": stage, "source": "langgraph-supervisor", "agent_events": [event], "artifact": None, "chat_title": chat_title}
     await db["a2a_messages"].insert_one({"run_id": run_id, "project_id": request.get("project_id"), "workflow_id": request.get("workflow_id"), "from_agent": "master-orchestrator", "to_agent": agent_name, "message_type": "delegation", "payload": {"stage": stage, "prompt": request.get("prompt", "")}, "created_at": started})
     await db["a2a_messages"].insert_one({"run_id": run_id, "project_id": request.get("project_id"), "workflow_id": request.get("workflow_id"), "from_agent": agent_name, "to_agent": "master-orchestrator", "message_type": "result", "payload": {"stage": stage, "output": output}, "created_at": completed})
-    event = {"run_id": run_id, "agent_name": agent_name, "stage": stage, "framework": "langgraph", "status": "completed", "started_at": started, "completed_at": completed, "summary": output[:500]}
+    supervisor_event = {"run_id": run_id, "agent_name": "master-orchestrator", "stage": stage, "framework": "langgraph", "status": "delegated", "started_at": started, "completed_at": completed, "summary": state["master_brief"][:500]}
+    specialist_event = {"run_id": run_id, "agent_name": agent_name, "stage": stage, "framework": "langgraph", "status": "completed", "started_at": started, "completed_at": completed, "summary": output[:500]}
     if request.get("project_id") or request.get("workflow_id"):
-        await db["agent_runs"].insert_one({**event, "project_id": request.get("project_id"), "workflow_id": request.get("workflow_id"), "chat_id": request.get("chat_id"), "created_by": user_id, "master_brief": state["master_brief"], "output": output, "skills": request.get("skills") or []})
-    return {"reply": output, "stage": stage, "source": "langgraph-supervisor", "agent_events": [event], "artifact": {"title": agent_name, "stage": stage, "content": output, "requires_hitl": True}, "chat_title": chat_title}
+        await db["agent_runs"].insert_one({**specialist_event, "project_id": request.get("project_id"), "workflow_id": request.get("workflow_id"), "chat_id": request.get("chat_id"), "created_by": user_id, "master_brief": state["master_brief"], "output": output, "skills": request.get("skills") or []})
+    return {"reply": output, "stage": stage, "source": "langgraph-supervisor", "agent_events": [supervisor_event, specialist_event], "artifact": {"title": agent_name, "stage": stage, "content": output, "requires_hitl": True}, "chat_title": chat_title}

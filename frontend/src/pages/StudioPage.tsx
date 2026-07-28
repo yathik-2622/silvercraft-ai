@@ -1,9 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { animate } from 'motion';
 import { motion, AnimatePresence } from 'motion/react';
-import { Bot, ChevronDown, ChevronLeft, ChevronRight, Copy, Database, FileText, FileUp, GitBranch, History, LoaderCircle, MessageSquare, Pencil, Plus, Search, Send, Sparkles, Table2, Trash2, X } from 'lucide-react';
-import { orchestratorApi, projectsApi, sessionsApi, settingsApi, skillsApi, workflowsApi } from '../api/client';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { Bot, ChevronDown, ChevronLeft, ChevronRight, Copy, Database, FileText, FileUp, GitBranch, LoaderCircle, PanelRightClose, PanelRightOpen, Pencil, Plus, RotateCcw, Search, Send, Sparkles, Table2, Trash2, X } from 'lucide-react';
+import { artifactsApi, orchestratorApi, projectsApi, sessionsApi, settingsApi, skillsApi, workflowsApi } from '../api/client';
+import { FollowUpActions } from '../components/studio/FollowUpActions';
+import { IconButton } from '../components/studio/IconButton';
 
 type Message = { id: string; sender: 'user' | 'assistant' | 'system'; text: string; stage?: string };
 type Artifact = { id: string; title: string; stage: string; content: string; status: 'awaiting_hitl' | 'approved' };
@@ -11,12 +14,6 @@ type Chat = { id: string; title: string; updated_at?: string };
 type Skill = { id: string; name: string; description: string; content: string };
 type Model = { id?: string; value?: string; name?: string; label?: string };
 const stages = [{ id: '1-source-analysis', label: 'Source Analysis' }, { id: '2-conceptual', label: 'Conceptual Modeling' }, { id: '3-logical', label: 'Logical Modeling' }, { id: '4-physical-sttm', label: 'Physical Data Modeling' }];
-
-const IconButton = ({ label, onClick, children }: { label: string; onClick: () => void; children: React.ReactNode }) => (
-  <button type="button" aria-label={label} title={label} onClick={onClick} className="grid h-8 w-8 place-items-center rounded-full border border-slate-200 bg-slate-50 text-slate-500 transition hover:border-[#e67225]/50 hover:bg-[#e67225]/10 hover:text-[#e67225]">
-    {children}
-  </button>
-);
 
 export const StudioPage: React.FC = () => {
   const { id: projectId = '' } = useParams<{ id: string }>(); 
@@ -34,6 +31,7 @@ export const StudioPage: React.FC = () => {
   const [model, setModel] = useState('');
   const [prompt, setPrompt] = useState(''); 
   const [busy, setBusy] = useState(false); 
+  const [activity, setActivity] = useState<string[]>([]);
   const [historyOpen, setHistoryOpen] = useState(true); 
   const [search, setSearch] = useState(''); 
   const [view, setView] = useState<'table' | 'graph'>('table'); 
@@ -42,19 +40,26 @@ export const StudioPage: React.FC = () => {
   const [skillOpen, setSkillOpen] = useState(false); 
   const [activeSkill, setActiveSkill] = useState<Skill | null>(null);
   const [attachments, setAttachments] = useState<{ id: string; name: string }[]>([]); 
+  const [canvasOpen, setCanvasOpen] = useState(true);
+  const [canvasWidth, setCanvasWidth] = useState(520);
   const [error, setError] = useState(''); 
   const [showConnection, setShowConnection] = useState(false); 
   const [connection, setConnection] = useState({ provider: 'PostgreSQL', host: '', database: '', username: '', password: '' });
   
-  const canvasVisible = busy || artifacts.length > 0; 
+  // A normal reply remains in the transcript. The canvas exists only after a
+  // specialist returns a reviewable modeling artifact.
+  const canvasAvailable = artifacts.length > 0;
   const visibleChats = useMemo(() => chats.filter((chat) => chat.title.toLowerCase().includes(search.toLowerCase())), [chats, search]); 
   const selectedModel = model || models[0]?.value || models[0]?.id || '';
+  const composerRows = Math.max(1, Math.min(5, Math.ceil(prompt.length / 90) + prompt.split('\n').length - 1));
   
   const persist = (id: string, sender: Message['sender'], text: string, stage = stages[0].id) => sessionsApi.appendMessage(id, { sender, text, stage });
   const openChat = async (id: string) => { 
-    const response = await sessionsApi.getChat(id); 
+    const [response, artifactResponse] = await Promise.all([sessionsApi.getChat(id), artifactsApi.list(id)]);
     setChatId(id); 
     setMessages(response.data.messages ?? []); 
+    setArtifacts((artifactResponse.data ?? []).map((artifact: any) => ({ id: artifact.id, title: artifact.title, stage: artifact.stage, content: artifact.content, status: artifact.status })));
+    setExpanded([...new Set((artifactResponse.data ?? []).map((artifact: any) => artifact.stage))]);
   };
   const refreshChats = async (preferred = '') => { 
     const response = await sessionsApi.listChats(projectId); 
@@ -96,32 +101,21 @@ export const StudioPage: React.FC = () => {
   useEffect(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }); }, [messages.length, busy]);
   
   useEffect(() => {
-    const onEnter = (event: PointerEvent) => { 
-      const button = (event.target as Element | null)?.closest('button'); 
-      if (button && !button.hasAttribute('disabled')) animate(button, { transform: 'scale(1.025)' } as any, { duration: 0.16, ease: 'ease-out' } as any); 
+    const onMove = (event: PointerEvent) => setCanvasWidth(Math.min(900, Math.max(360, window.innerWidth - event.clientX)));
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
     };
-    const onLeave = (event: PointerEvent) => { 
-      const button = (event.target as Element | null)?.closest('button'); 
-      if (button) animate(button, { transform: 'scale(1)' } as any, { duration: 0.18, ease: 'ease-out' } as any); 
+    const startResize = () => {
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
     };
-    const onClick = (event: MouseEvent) => { 
-      const button = (event.target as Element | null)?.closest('button'); 
-      if (button && !button.hasAttribute('disabled')) animate(button, { transform: ['scale(1)', 'scale(0.94)', 'scale(1)'] } as any, { duration: 0.22, ease: 'ease-in-out' } as any); 
-    };
-    document.addEventListener('pointerover', onEnter); 
-    document.addEventListener('pointerout', onLeave); 
-    document.addEventListener('click', onClick);
-    return () => { 
-      document.removeEventListener('pointerover', onEnter); 
-      document.removeEventListener('pointerout', onLeave); 
-      document.removeEventListener('click', onClick); 
+    window.addEventListener('adm:canvas-resize', startResize);
+    return () => {
+      window.removeEventListener('adm:canvas-resize', startResize);
+      onUp();
     };
   }, []);
-  
-  useEffect(() => { 
-    const canvas = scrollRef.current?.parentElement?.nextElementSibling as HTMLElement | null; 
-    if (canvasVisible && canvas) animate(canvas, { opacity: [0, 1] } as any, { duration: 0.32, ease: 'ease-out' } as any); 
-  }, [canvasVisible]);
   
   const sendPrompt = async (stageOverride?: string, overrideText?: string) => { 
     const text = (overrideText ?? prompt).trim(); 
@@ -130,6 +124,7 @@ export const StudioPage: React.FC = () => {
     setPrompt(''); 
     setSkillOpen(false); 
     setBusy(true); 
+    setActivity(['Preparing your modeling request']);
     
     const textToSend = activeSkill ? `/${activeSkill.name} ${text}` : text;
     const textToDisplay = activeSkill ? `Used /${activeSkill.name} skill\n${text}` : text;
@@ -145,24 +140,37 @@ export const StudioPage: React.FC = () => {
         await persist(chatId, 'assistant', preview || 'No industry skills available.', stage); 
         return; 
       } 
-      const response = await orchestratorApi.run({ prompt: textToSend, current_stage: stage, workflow_type: 'orchestrator', skills: skills.map((skill) => skill.name), project_id: projectId, workflow_id: workflowId, chat_id: chatId, model_name: selectedModel, schema_context: { project: project?.name, domain: project?.domain, subdomain: project?.sub_domain, attachments: attachments.map((item) => item.name), artifacts } }); 
-      const artifact = response.data.artifact; 
+      let result: any = null;
+      for await (const event of orchestratorApi.stream({ prompt: textToSend, current_stage: stage, workflow_type: 'orchestrator', skills: skills.map((skill) => skill.name), project_id: projectId, workflow_id: workflowId, chat_id: chatId, model_name: selectedModel, schema_context: { project: project?.name, domain: project?.domain, subdomain: project?.sub_domain, attachments: attachments.map((item) => item.name), artifacts } })) {
+        if (event.event === 'activity') setActivity((items) => [...items, event.data.label || event.data.summary || 'Agent activity updated']);
+        if (event.event === 'error') throw new Error(event.data.detail || 'The orchestration stream failed.');
+        if (event.event === 'result') result = event.data;
+      }
+      if (!result) throw new Error('The orchestration stream ended without a result.');
+      const artifact = result.artifact;
       if (artifact) { 
         const next = { id: `artifact-${Date.now()}`, title: artifact.title, stage: artifact.stage || stage, content: artifact.content, status: 'awaiting_hitl' as const }; 
+        const saved = await artifactsApi.create(chatId, { title: next.title, stage: next.stage, content: next.content, agent_name: artifact.title });
+        next.id = saved.data.id;
         setArtifacts((items) => [...items, next]); 
         setExpanded((items) => [...new Set([...items, next.stage])]); 
+        setCanvasOpen(true);
         const notice = `${stages.find((item) => item.id === next.stage)?.label || 'Modeling'} output is ready in the canvas for review.`; 
         setMessages((items) => [...items, { id: `ready-${Date.now()}`, sender: 'assistant', text: notice, stage }]); 
         await persist(chatId, 'assistant', notice, stage); 
       } else { 
-        const reply = response.data.reply || 'I am ready to help.'; 
+        const reply = result.reply || 'I am ready to help.';
         setMessages((items) => [...items, { id: `assistant-${Date.now()}`, sender: 'assistant', text: reply, stage }]); 
         await persist(chatId, 'assistant', reply, stage); 
       } 
+      if (result.chat_title) {
+        setChats((items) => items.map((chat) => chat.id === chatId ? { ...chat, title: result.chat_title } : chat));
+      }
     } catch (e: any) { 
       setMessages((items) => [...items, { id: `error-${Date.now()}`, sender: 'system', text: e.response?.data?.detail || 'The orchestration request failed.' }]); 
     } finally { 
       setBusy(false); 
+      setActivity([]);
     } 
   };
   
@@ -202,12 +210,16 @@ export const StudioPage: React.FC = () => {
   };
   const updateArtifact = (artifact: Artifact, content: string) => setArtifacts((items) => items.map((item) => item.id === artifact.id ? { ...item, content } : item)); 
   const approve = async (artifact: Artifact) => { 
+    if (artifact.id.startsWith('artifact-')) throw new Error('Artifact has not been persisted yet.');
+    await artifactsApi.updateStatus(artifact.id, 'approved', 'Approved from canvas.');
     await sessionsApi.decideHitl(workflowId, artifact.stage, { decision: 'approved', comment: 'Approved from canvas.', artifact }); 
     setArtifacts((items) => items.map((item) => item.id === artifact.id ? { ...item, status: 'approved' } : item)); 
   };
+  const startCanvasResize = () => window.dispatchEvent(new Event('adm:canvas-resize'));
 
   const canvas = (
-    <section className="flex min-w-0 flex-col border-l border-slate-200 bg-white/60 backdrop-blur-xl">
+    <motion.section initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }} transition={{ type: 'spring', stiffness: 300, damping: 30 }} className="relative flex min-w-0 min-h-0 flex-col border-l border-slate-200 bg-white/60 backdrop-blur-xl">
+      <div onPointerDown={startCanvasResize} className="absolute -left-1 top-0 z-20 h-full w-2 cursor-col-resize touch-none" aria-label="Resize canvas" role="separator" />
       <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
         <div>
           <div className="text-sm font-black text-slate-900">
@@ -216,7 +228,8 @@ export const StudioPage: React.FC = () => {
           </div>
           <p className="mt-1 text-xs text-slate-500">Delegated modeling work and HITL review.</p>
         </div>
-        {!busy && (
+        <div className="flex items-center gap-2">
+          {!busy && (
           <div className="flex rounded-lg border border-slate-200 bg-slate-50 p-1">
             <button onClick={() => setView('table')} className={`rounded-md px-2 py-1 text-xs font-bold transition ${view === 'table' ? 'bg-[#e67225] text-white shadow-sm' : 'text-slate-500 hover:text-slate-900'}`}>
               <Table2 className="mr-1 inline h-3.5 w-3.5" />
@@ -227,7 +240,9 @@ export const StudioPage: React.FC = () => {
               Graph
             </button>
           </div>
-        )}
+          )}
+          <IconButton label="Close agent canvas" onClick={() => setCanvasOpen(false)}><PanelRightClose className="h-4 w-4" /></IconButton>
+        </div>
       </div>
       {busy ? (
         <div className="grid flex-1 place-items-center p-8">
@@ -261,7 +276,7 @@ export const StudioPage: React.FC = () => {
           ))}
         </div>
       ) : (
-        <div className="flex-1 overflow-y-auto p-4">
+        <div className="min-h-0 flex-1 overflow-y-auto p-4">
           {stages.map((stage) => { 
             const items = artifacts.filter((item) => item.stage === stage.id); 
             const open = expanded.includes(stage.id); 
@@ -275,7 +290,7 @@ export const StudioPage: React.FC = () => {
                   </span>
                 </button>
                 {open && (
-                  <div className="border-t border-slate-200 p-3 bg-slate-500">
+                  <div className="border-t border-slate-200 bg-slate-50/70 p-3">
                     <input onKeyDown={(e) => { if (e.key === 'Enter') { void sendPrompt(stage.id, (e.target as HTMLInputElement).value); (e.target as HTMLInputElement).value = ''; } }} placeholder={`Ask ${stage.label} agent…`} className="mb-3 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-900 placeholder-slate-500 outline-none focus:border-[#e67225]/50 focus:bg-slate-100" />
                     {items.map((artifact) => (
                       <div key={artifact.id} className="mb-3 rounded-xl border border-slate-200 bg-white p-3 shadow-lg">
@@ -283,7 +298,10 @@ export const StudioPage: React.FC = () => {
                           <span className="text-slate-900">{artifact.title}</span>
                           <span className={artifact.status === 'approved' ? 'text-emerald-400' : 'text-[#e67225]'}>{artifact.status === 'approved' ? 'Approved' : 'HITL review'}</span>
                         </div>
-                        <textarea value={artifact.content} onChange={(e) => updateArtifact(artifact, e.target.value)} className="mt-2 min-h-32 w-full rounded-lg border border-slate-200 bg-white p-3 text-xs leading-5 text-slate-700 outline-none focus:border-[#e67225]/50" />
+                        <div className="prose prose-sm mt-3 max-w-none overflow-x-auto rounded-lg border border-slate-100 bg-slate-50/70 p-3 text-slate-700 prose-table:text-xs prose-th:text-left prose-td:whitespace-nowrap">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{artifact.content}</ReactMarkdown>
+                        </div>
+                        <textarea value={artifact.content} onChange={(e) => updateArtifact(artifact, e.target.value)} onBlur={(e) => { if (!artifact.id.startsWith('artifact-')) void artifactsApi.update(artifact.id, e.target.value); }} className="mt-2 min-h-32 w-full rounded-lg border border-slate-200 bg-white p-3 text-xs leading-5 text-slate-700 outline-none focus:border-[#e67225]/50" />
                         <button disabled={artifact.status === 'approved'} onClick={() => void approve(artifact)} className="mt-3 rounded-lg bg-[#e67225] px-4 py-2 text-[11px] font-bold text-slate-900 transition hover:bg-[#cf5e19] disabled:opacity-50">Approve HITL output</button>
                       </div>
                     ))}
@@ -294,7 +312,7 @@ export const StudioPage: React.FC = () => {
           })}
         </div>
       )}
-    </section>
+    </motion.section>
   );
 
   return (
@@ -316,8 +334,11 @@ export const StudioPage: React.FC = () => {
         <div className="w-16" />
       </header>
       
-      <main className={`relative z-10 grid h-[calc(100vh-56px)] transition-all duration-300 ${canvasVisible ? (historyOpen ? 'grid-cols-[290px_minmax(420px,0.9fr)_minmax(410px,1.05fr)]' : 'grid-cols-[72px_minmax(420px,0.9fr)_minmax(410px,1.05fr)]') : (historyOpen ? 'grid-cols-[290px_minmax(520px,1fr)]' : 'grid-cols-[72px_minmax(520px,1fr)]')}`}>
-        <aside className="flex min-w-0 flex-col border-r border-slate-200 bg-white/60 backdrop-blur-xl">
+      <main
+        className="relative z-10 grid h-[calc(100vh-56px)] min-h-0 transition-[grid-template-columns] duration-300"
+        style={{ gridTemplateColumns: `${historyOpen ? 290 : 72}px minmax(0, 1fr)${canvasAvailable && canvasOpen ? ` ${canvasWidth}px` : ''}` }}
+      >
+        <aside className="flex min-w-0 min-h-0 flex-col border-r border-slate-200 bg-white/60 backdrop-blur-xl">
           <div className="flex h-16 items-center justify-between px-4">
             {historyOpen && (
               <div className="flex items-center gap-3">
@@ -363,8 +384,13 @@ export const StudioPage: React.FC = () => {
           </div>
         </aside>
 
-        <section className="flex min-w-0 flex-col">
-          <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 md:px-10">
+        <section className="relative flex min-w-0 min-h-0 flex-col">
+          {canvasAvailable && !canvasOpen && (
+            <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="absolute right-5 top-4 z-10">
+              <IconButton label="Open agent canvas" onClick={() => setCanvasOpen(true)}><PanelRightOpen className="h-4 w-4" /></IconButton>
+            </motion.div>
+          )}
+          <div ref={scrollRef} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain px-6 md:px-10">
             {messages.length === 0 ? (
               <div className="flex min-h-full items-center justify-center py-12">
                 <div className="w-full max-w-3xl text-center">
@@ -385,7 +411,7 @@ export const StudioPage: React.FC = () => {
             ) : (
               <div className="mx-auto max-w-4xl py-8 overflow-x-hidden">
                 <AnimatePresence initial={false}>
-                  {messages.map((message) => (
+                  {messages.map((message, index) => (
                     <motion.article 
                       key={message.id}
                       initial={{ opacity: 0, y: 15, scale: 0.95 }}
@@ -403,26 +429,40 @@ export const StudioPage: React.FC = () => {
                         <div className={`whitespace-pre-wrap text-[15px] leading-relaxed ${message.sender === 'user' ? 'inline-block rounded-3xl bg-[#e67225] px-5 py-3 text-white shadow-md' : message.sender === 'system' ? 'text-rose-600' : 'text-slate-700'}`}>
                           {message.text}
                         </div>
+                        {message.sender === 'assistant' && index === messages.length - 1 && (
+                          <FollowUpActions onSelect={(followUp) => void sendPrompt(message.stage, followUp)} />
+                        )}
                         <div className={`mt-3 flex ${message.sender === 'user' ? 'justify-end' : 'justify-start'} opacity-0 transition group-hover:opacity-100`}>
                           <IconButton label="Copy message" onClick={() => navigator.clipboard.writeText(message.text)}>
                             <Copy className="h-3.5 w-3.5" />
                           </IconButton>
+                          {message.sender === 'assistant' && (
+                            <IconButton label="Regenerate response" onClick={() => {
+                              const priorUser = [...messages.slice(0, index)].reverse().find((item) => item.sender === 'user');
+                              if (priorUser) void sendPrompt(message.stage, priorUser.text.replace(/^Used \/[^\n]+ skill\n/, ''));
+                            }}>
+                              <RotateCcw className="h-3.5 w-3.5" />
+                            </IconButton>
+                          )}
                         </div>
                       </div>
                     </motion.article>
                   ))}
+                  {busy && (
+                    <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="my-5 rounded-2xl border border-[#e67225]/20 bg-white/70 p-4 shadow-sm">
+                      <div className="flex items-center gap-2 text-xs font-bold text-slate-700"><span className="h-2 w-2 animate-pulse rounded-full bg-[#e67225]" /> ADM architect activity</div>
+                      <div className="mt-3 space-y-2">{activity.slice(-3).map((item, itemIndex) => <div key={`${item}-${itemIndex}`} className="text-xs text-slate-500">{item}</div>)}</div>
+                    </motion.div>
+                  )}
                 </AnimatePresence>
               </div>
             )}
           </div>
 
           {/* Composer */}
-          <div className="px-5 pb-5 pt-3">
+          <div className={messages.length === 0 ? "absolute inset-x-0 top-1/2 z-10 -translate-y-1/2 px-5" : "px-5 pb-5 pt-3"}>
             <div className="mx-auto max-w-4xl rounded-[32px] border border-slate-200 bg-white/80 shadow-[0_24px_70px_rgba(0,0,0,0.5)] backdrop-blur-2xl">
               <div className="flex flex-wrap items-center gap-3 px-5 pt-4">
-                <div className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-bold text-[#e67225]">
-                  <Sparkles className="mr-1.5 inline h-3.5 w-3.5" />Platform
-                </div>
                 <select value={selectedModel} onChange={(e) => setModel(e.target.value)} className="max-w-52 rounded-full border border-slate-200 bg-slate-50 px-4 py-1.5 text-xs font-semibold text-slate-700 outline-none focus:border-[#e67225]/50">
                   <option value="">Platform model</option>
                   {models.map((item) => (
@@ -452,7 +492,7 @@ export const StudioPage: React.FC = () => {
                 <input ref={uploadRef} type="file" multiple className="hidden" onChange={(e) => void upload(e.target.files)} />
                 {skillOpen && (
                   <div className="absolute bottom-[calc(100%+8px)] left-5 right-5 z-20 max-h-60 overflow-auto rounded-3xl border border-slate-200 bg-white p-2 shadow-2xl backdrop-blur-xl">
-                    {skills.map((skill) => (
+                    {skills.filter((skill) => `/${skill.name}`.toLowerCase().includes(prompt.toLowerCase())).map((skill) => (
                       <button key={skill.id} onClick={() => { setActiveSkill(skill); setPrompt(''); setSkillOpen(false); }} className="block w-full rounded-2xl p-4 text-left hover:bg-slate-50 transition">
                         <div className="text-sm font-bold text-[#e67225]">/{skill.name}</div>
                         <div className="mt-1 text-xs text-slate-500">{skill.description}</div>
@@ -474,7 +514,7 @@ export const StudioPage: React.FC = () => {
                   <textarea 
                     value={prompt} 
                     onChange={(e) => { 
-                      if (e.target.value === '/') {
+                      if (e.target.value.startsWith('/')) {
                         setSkillOpen(true);
                       } else {
                         setSkillOpen(false);
@@ -484,7 +524,7 @@ export const StudioPage: React.FC = () => {
                     onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void sendPrompt(); } }} 
                     placeholder={activeSkill ? "Add instructions for this skill..." : "Ask a question, describe your model, or type / for skills…"}
                     className="w-full resize-none bg-transparent text-[15px] leading-7 text-slate-900 outline-none placeholder:text-slate-500"
-                    rows={Math.min(5, prompt.split('\n').length || 1)}
+                    rows={composerRows}
                   />
                 </div>
                 <div className="flex items-center justify-between gap-3 pt-2 border-t border-slate-200 mt-2">
@@ -501,7 +541,7 @@ export const StudioPage: React.FC = () => {
           </div>
         </section>
 
-        {canvasVisible && canvas}
+        <AnimatePresence>{canvasAvailable && canvasOpen && canvas}</AnimatePresence>
       </main>
 
       {/* Database Connection Modal */}

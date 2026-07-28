@@ -11,15 +11,16 @@ Powers:
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from typing import Any, Dict, List, Optional, TypedDict
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-# LangGraph / LangChain runtime
 try:
-    from langgraph.graph import StateGraph, END
+    from langgraph.graph import END, StateGraph
     from langchain_core.messages import HumanMessage, SystemMessage
     from langchain_google_genai import ChatGoogleGenerativeAI
     LANGGRAPH_AVAILABLE = True
@@ -29,6 +30,7 @@ except ImportError:
 from config import settings
 from database import get_db
 from api.routes.auth import get_current_user
+from api.routes.skills import _industry_skills
 from models.user import UserModel
 from core.chat_orchestration import run_chat_orchestration
 
@@ -100,6 +102,10 @@ BUILTIN_SKILLS: Dict[str, str] = {
 - Include STTM matrix columns: src_table, src_col, tgt_table, tgt_col, rule, dq_check, load_type
 """,
 }
+
+# Markdown files under backend/skills are the authoritative standards. The
+# compatibility dictionary is rebuilt at import for the legacy planning APIs.
+BUILTIN_SKILLS = {skill["name"]: skill["content"] for skill in _industry_skills()}
 
 # ─────────────────────────────────────────────────────────────
 # Slash-command → skill key mapper
@@ -246,6 +252,10 @@ class OrchestratorResponse(BaseModel):
     artifact: Optional[Dict[str, Any]] = None
     chat_title: Optional[str] = None
 
+
+def _sse(event: str, payload: dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload, default=str)}\n\n"
+
 class OrchestratorPlanRequest(BaseModel):
     prompt: str
     project_id: Optional[str] = None
@@ -338,6 +348,23 @@ async def run_orchestrator(req: OrchestratorRequest, current_user: UserModel = D
         except Exception:
             pass
     return OrchestratorResponse(**{**result, "suggested_workflow": suggested_workflow})
+
+
+@orchestrator_router.post("/stream")
+async def stream_orchestrator(req: OrchestratorRequest, current_user: UserModel = Depends(get_current_user), db=Depends(get_db)):
+    """SSE endpoint for visible orchestration milestones and the final persisted result."""
+    async def events() -> AsyncIterator[str]:
+        yield _sse("activity", {"label": "Master architect is classifying the request", "status": "running"})
+        try:
+            result = await run_orchestrator(req, current_user, db)
+            for event in result.agent_events:
+                yield _sse("activity", {"label": event["agent_name"], "status": event["status"], "summary": event.get("summary", "")})
+            yield _sse("result", result.model_dump())
+        except HTTPException as exc:
+            yield _sse("error", {"detail": exc.detail, "status": exc.status_code})
+        except Exception:
+            yield _sse("error", {"detail": "The orchestration stream failed.", "status": 500})
+    return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 def _skill_from_prompt(prompt: str) -> str:
     slash = parse_slash_command(prompt)

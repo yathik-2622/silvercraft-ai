@@ -112,11 +112,12 @@ http://localhost:3002
 2. On the dashboard, verify **My projects**, **Shared projects**, compact edit/delete actions, and the settings icon.
 3. Keep **Platform provider** selected to use `LLM_*` values from backend `.env`. Do not enter a key in the UI for this mode.
 4. Create a project with name, domain, subdomain, optional description, team emails, and Foundation/Product layer.
-5. Open its card. The chat studio opens with a blank right canvas.
+5. Open its card. The chat studio opens without a canvas; it opens only when a delegated agent produces an artifact.
 6. Type `/` to preview approved industry skill Markdown, select a skill, and send a modeling request.
 7. Upload a source file or use **Connect DB**. The screen records connection metadata only; it does not store or echo the password.
-8. Confirm that the LangGraph supervisor delegates to the stage agent and output appears under the matching collapsible stage.
-9. Edit an artifact, approve its HITL output, switch Table/Graph, create/rename/delete chats, and reload the page to confirm Mongo persistence.
+8. Confirm the visible **ADM architect activity** stream appears while the supervisor delegates, then the artifact opens in the matching collapsible stage.
+9. Edit an artifact, click outside the editor to save it, approve its HITL output, switch Table/Graph, create/rename/delete chats, and reload the page to confirm Mongo persistence.
+10. Verify chat history at `GET /api/v1/chats/{chat_id}/history` and the combined project timeline at `GET /api/v1/projects/{project_id}/history` in `/docs`.
 
 ## Verification Commands
 

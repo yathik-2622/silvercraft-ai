@@ -1,3 +1,4 @@
+from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from typing import List
 from bson import ObjectId
@@ -6,16 +7,31 @@ from models.user import UserModel
 from models.skill import SkillModel, SkillCreate, SkillResponse
 from api.routes.auth import get_current_user
 
-# Curated, versioned industry templates; these are not generated from a user prompt.
-INDUSTRY_SKILLS = [
-    {"name": "source-analysis", "description": "Profiles source structures, data quality, keys, and PII candidates.", "content": "Profile row counts, null rates, distinct values, candidate keys, relationships, and sensitive fields. Produce a data dictionary and explicit assumptions."},
-    {"name": "3nf-normalization", "description": "Applies relational 1NF, 2NF, and 3NF normalization standards.", "content": "Identify functional dependencies, isolate repeating groups, define PK/FK constraints, and document normalization decisions without inventing source fields."},
-    {"name": "dimensional-modeling", "description": "Builds Kimball-compatible facts, dimensions, grain, and SCD guidance.", "content": "Declare business process and grain first. Define conformed dimensions, fact measures, surrogate keys, SCD behavior, and reject ambiguous relationships for HITL."},
-    {"name": "data-vault", "description": "Builds Data Vault 2.0 hubs, links, satellites, and audit columns.", "content": "Identify business keys for hubs, relationships for links, descriptive history for satellites, and include load timestamp, record source, and hash-key conventions."},
-    {"name": "sttm", "description": "Creates source-to-target mappings, transformations, DQ checks, and load rules.", "content": "Map every target field to source fields, transformation logic, default handling, DQ rules, and load strategy. Mark all unverified mappings as assumptions."},
-]
+SKILL_DIRECTORY = Path(__file__).resolve().parents[2] / "skills"
+
+
+def _industry_skills() -> list[dict[str, str]]:
+    """Load curated standards from Markdown so they can be reviewed/versioned outside Python."""
+    skills: list[dict[str, str]] = []
+    for path in sorted(SKILL_DIRECTORY.glob("*.md")):
+        raw = path.read_text(encoding="utf-8").strip()
+        if not raw.startswith("---"):
+            continue
+        _, front_matter, content = raw.split("---", 2)
+        metadata = dict(
+            line.split(":", 1) for line in front_matter.splitlines() if ":" in line
+        )
+        name = metadata.get("name", path.stem).strip()
+        description = metadata.get("description", "").strip()
+        if name and description:
+            skills.append({"name": name, "description": description, "content": content.strip()})
+    return skills
 
 router = APIRouter()
+
+
+class SkillUpdate(SkillCreate):
+    pass
 
 def _to_response(s: dict) -> SkillResponse:
     s = dict(s)
@@ -23,8 +39,12 @@ def _to_response(s: dict) -> SkillResponse:
     return SkillResponse(**s)
 
 async def _ensure_industry_skills(db):
-    for skill in INDUSTRY_SKILLS:
-        await db["skills"].update_one({"name": skill["name"], "created_by": None}, {"$setOnInsert": {**skill, "created_by": None}}, upsert=True)
+    for skill in _industry_skills():
+        await db["skills"].update_one(
+            {"name": skill["name"], "created_by": None},
+            {"$set": {**skill, "created_by": None}},
+            upsert=True,
+        )
 
 @router.post("/", response_model=SkillResponse, status_code=201)
 async def create_skill(skill: SkillCreate, current_user: UserModel = Depends(get_current_user), db=Depends(get_db)):
@@ -51,6 +71,21 @@ async def get_skill(skill_id: str, current_user: UserModel = Depends(get_current
     if not skill:
         raise HTTPException(status_code=404, detail="Skill not found")
     return _to_response(skill)
+
+
+@router.put("/{skill_id}", response_model=SkillResponse)
+async def update_skill(skill_id: str, body: SkillUpdate, current_user: UserModel = Depends(get_current_user), db=Depends(get_db)):
+    try:
+        oid = ObjectId(skill_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid skill ID") from exc
+    existing = await db["skills"].find_one({"_id": oid})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    if existing.get("created_by") != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Only your custom skills can be updated")
+    await db["skills"].update_one({"_id": oid}, {"$set": body.model_dump()})
+    return _to_response(await db["skills"].find_one({"_id": oid}))
 
 @router.delete("/{skill_id}", status_code=204)
 async def delete_skill(skill_id: str, current_user: UserModel = Depends(get_current_user), db=Depends(get_db)):

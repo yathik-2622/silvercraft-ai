@@ -69,6 +69,15 @@ async def get_chat(chat_id: str, current_user: UserModel = Depends(get_current_u
     return {"id": str(chat["_id"]), "project_id": chat["project_id"], "title": chat["title"], "messages": chat.get("messages", []), "attachments": chat.get("attachments", []), "preferences": chat.get("preferences", {}), "updated_at": chat["updated_at"]}
 
 
+@router.get("/chats/{chat_id}/history")
+async def get_chat_history(chat_id: str, limit: int = 200, current_user: UserModel = Depends(get_current_user), db=Depends(get_db)):
+    """Return chronological persisted conversation history for a single chat."""
+    chat = await _chat_for_user(chat_id, str(current_user.id), db)
+    safe_limit = max(1, min(limit, 500))
+    messages = chat.get("messages", [])[-safe_limit:]
+    return {"chat_id": chat_id, "title": chat["title"], "messages": messages, "count": len(messages)}
+
+
 @router.put("/chats/{chat_id}")
 async def rename_chat(chat_id: str, body: ChatUpdate, current_user: UserModel = Depends(get_current_user), db=Depends(get_db)):
     chat = await _chat_for_user(chat_id, str(current_user.id), db)
@@ -176,4 +185,3 @@ async def update_chat_preferences(chat_id: str, body: ChatPreferences, current_u
         {"$set": {"preferences": prefs, "updated_at": datetime.utcnow()}},
     )
     return {"id": chat_id, "preferences": prefs}
-
