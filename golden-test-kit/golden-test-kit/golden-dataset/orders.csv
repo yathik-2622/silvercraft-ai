@@ -1,0 +1,6 @@
+order_id,customer_no,order_date,status,total_amt
+O-5001,E-001,2024-01-05,Shipped,4500.00
+O-5002,E-002,2024-01-07,Shipped,1200.00
+O-5003,E-001,2024-02-11,Pending,780.00
+O-5004,E-003,2024-02-15,Cancelled,0.00
+O-5005,E-006,2024-03-01,Shipped,2200.00

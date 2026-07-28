@@ -1,0 +1,5 @@
+customer_no,cust_name,email_address,region,credit_limit
+E-001,Alice Nair,alice.nair@example.com,South,50000
+E-002,Rahul Mehta,rahul.mehta@example.com,West,30000
+E-003,Sara Iqbal,sara.iqbal@example.com,North,20000
+E-006,Karthik Subramaniam,karthik.s@example.com,South,15000

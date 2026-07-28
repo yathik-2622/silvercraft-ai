@@ -1,0 +1,6 @@
+cust_id,full_name,email,phone,signup_date,loyalty_segment
+C1001,Alice Nair,alice.nair@example.com,+91-98765-11111,2022-03-14,Gold
+C1002,Rahul Mehta,rahul.mehta@example.com,+91-98765-22222,2021-11-02,Silver
+C1003,Sara Iqbal,sara.iqbal@example.com,,2023-01-20,Gold
+C1004,John Peter,john.peter@example.com,+91-98765-44444,2020-06-30,Bronze
+C1005,Divya Rao,divya.rao@example.com,+91-98765-55555,2023-08-11,Silver

@@ -1,0 +1,97 @@
+# Foundation Layer — Stage Step Dependency Graph
+# Per ADM_2.0_BUILD_SPEC.md §3.6
+#
+# When a person edits step N at the HITL gate, the Orchestrator's regenerate
+# handler consults this file to determine which downstream steps within the same
+# stage must also re-run. Steps not listed as downstream of the edited step are
+# safe to keep (patch-in-place).
+#
+# Format:
+#   stage_id:
+#     step_id:
+#       downstream: [step_ids_that_must_rerun]
+#       description: human-readable rationale
+
+foundation:
+  source_analysis:
+    "1.1_import":
+      downstream: ["1.2_profile", "1.3_dictionary", "1.4_classification", "1.5_domain", "1.6_pks", "1.7_relationships"]
+      description: "All steps depend on the imported source data."
+    "1.2_profile":
+      downstream: ["1.3_dictionary", "1.4_classification", "1.5_domain", "1.6_pks", "1.7_relationships"]
+      description: "Profile output feeds dictionary, classification, domain, PK detection, and relationship detection."
+    "1.3_dictionary":
+      downstream: ["1.4_classification", "1.5_domain"]
+      description: "Dictionary context enriches classification and domain assignment."
+    "1.4_classification":
+      downstream: []
+      description: "Classification is a leaf in source analysis — safe patch-in-place."
+    "1.5_domain":
+      downstream: []
+      description: "Domain assignment is a leaf — safe patch-in-place."
+    "1.6_pks":
+      downstream: ["1.7_relationships"]
+      description: "PK changes affect FK/relationship detection."
+    "1.7_relationships":
+      downstream: []
+      description: "Relationships is the final step in source analysis."
+
+  conceptual_modeling:
+    "2.1_generate_concepts":
+      downstream: ["2.2_generate_relationships"]
+      description: "Concept changes require relationship re-derivation."
+    "2.2_generate_relationships":
+      downstream: []
+      description: "Relationships is the final step in conceptual modeling."
+
+  logical_modeling:
+    "3.1_type_selection":
+      downstream: ["3.2_standardize_names", "3.3_entity_role", "3.4_map_attributes", "3.5_classify", "3.6_identify_keys", "3.7_review_scd", "3.8_map_to_enterprise", "3.9_generate_relationships", "3.10_resolve_mn"]
+      description: "Modeling type (Kimball/Data Vault/3NF) governs all downstream decisions."
+    "3.2_standardize_names":
+      downstream: ["3.8_map_to_enterprise", "3.9_generate_relationships"]
+      description: "Name changes affect enterprise mapping and relationship labels."
+    "3.3_entity_role":
+      downstream: ["3.6_identify_keys", "3.7_review_scd", "3.9_generate_relationships"]
+      description: "FACT/DIMENSION role affects key strategy, SCD applicability, and relationships."
+    "3.4_map_attributes":
+      downstream: ["3.6_identify_keys", "3.9_generate_relationships"]
+      description: "Attribute changes affect key identification and relationship foreign keys."
+    "3.5_classify":
+      downstream: []
+      description: "Attribute classification (PII etc.) is a leaf — safe patch-in-place."
+    "3.6_identify_keys":
+      downstream: ["3.7_review_scd", "3.9_generate_relationships", "3.10_resolve_mn"]
+      description: "Key changes affect SCD stability analysis, FK relationships, and M:N resolution."
+    "3.7_review_scd":
+      downstream: ["3.9_generate_relationships"]
+      description: "SCD type changes affect relationship cardinality assumptions."
+    "3.8_map_to_enterprise":
+      downstream: []
+      description: "Enterprise mapping is informational — safe patch-in-place."
+    "3.9_generate_relationships":
+      downstream: ["3.10_resolve_mn"]
+      description: "Relationship changes may surface new M:N cases to resolve."
+    "3.10_resolve_mn":
+      downstream: []
+      description: "M:N resolution is the final step in logical modeling."
+
+  physical_modeling:
+    "4.1_surrogate_keys":
+      downstream: ["4.2_standardize_names", "4.4_generate_sttm", "4.5_ddl_dml"]
+      description: "Surrogate key strategy affects physical names, STTM mappings, and DDL."
+    "4.2_standardize_names":
+      downstream: ["4.4_generate_sttm", "4.5_ddl_dml"]
+      description: "Physical name changes propagate to STTM and DDL."
+    "4.3_transformations":
+      downstream: ["4.4_generate_sttm", "4.5_ddl_dml"]
+      description: "Transformation rule changes affect STTM mapping expressions and DDL defaults."
+    "4.4_generate_sttm":
+      downstream: ["4.5_ddl_dml"]
+      description: "STTM changes are reflected in DDL column ordering and comments."
+    "4.5_ddl_dml":
+      downstream: ["4.6_download_artifacts"]
+      description: "DDL changes regenerate downloadable artifacts."
+    "4.6_download_artifacts":
+      downstream: []
+      description: "Artifact download is a leaf — no downstream steps."

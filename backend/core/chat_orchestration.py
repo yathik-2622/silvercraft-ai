@@ -10,8 +10,12 @@ from uuid import uuid4
 
 import httpx
 from fastapi import HTTPException
+from bson import ObjectId
+import asyncio
+from httpx import AsyncClient
 
 from core.runtime_settings import resolve_llm_runtime
+from core.memory import extract_and_store_memory, get_project_memories
 
 try:
     from langgraph.graph import END, StateGraph
@@ -119,7 +123,7 @@ async def _specialist_node(state: ModelingState) -> dict:
         "conceptual = {concepts, relationships, warnings, thinking}; logical = {entities, relationships, warnings, thinking}; "
         "physical = {tables, sttm, ddl, warnings, thinking}. Every table/entity must contain a name and columns/attributes when evidence exists. "
         "Never claim to inspect a file, table, or database that has not been supplied.\n\n"
-        f"Master delegation brief:\n{state['master_brief']}\n\nApplicable skill Markdown:\n{state['skills_markdown']}"
+        f"Master delegation brief:\n{state['master_brief']}\n\nParsed source context:\n{json.dumps(state['project_context'], default=str)[:30000]}\n\nApplicable skill Markdown:\n{state['skills_markdown']}"
     )
     return {"output": await _chat_completion(state["runtime"], instruction, state["user_prompt"])}
 
@@ -164,6 +168,21 @@ async def _resolve_skill_markdown(db, user_id: str, names: list[str]) -> str:
     return "\n\n".join(f"# {item['name']}\n{item.get('description', '')}\n{item.get('content', '')}" for item in skills)
 
 
+async def _resolve_source_context(db, project_id: str | None, source_file_ids: list[str]) -> dict[str, Any]:
+    """Resolve upload references server-side; agents receive summaries, not raw browser state."""
+    object_ids = []
+    for file_id in source_file_ids:
+        try:
+            object_ids.append(ObjectId(file_id))
+        except Exception:
+            continue
+    if not project_id or not object_ids:
+        return {"source_tables": [], "parsed_documents": []}
+    rows = await db["project_files"].find({"_id": {"$in": object_ids}, "project_id": project_id}).to_list(length=50)
+    documents = [{"file_id": str(row["_id"]), "filename": row.get("filename"), "parser": row.get("parsed_document", {}).get("parser"), "tables": row.get("parsed_document", {}).get("tables", []), "excerpt": row.get("parsed_document", {}).get("excerpt", "")[:12000]} for row in rows]
+    return {"source_tables": [table for document in documents for table in document["tables"]], "parsed_documents": documents}
+
+
 async def _generate_chat_title(runtime: dict, user_prompt: str) -> str:
     """Use the orchestrator model to title a conversation by intent, not raw text."""
     title = await _chat_completion(runtime, "Create only a concise 3-7 word chat title based on the user's intent. No quotes, punctuation, or explanation.", user_prompt)
@@ -181,8 +200,19 @@ async def run_chat_orchestration(db, user_id: str, request: dict[str, Any]) -> d
         runtime["default_model"] = str(request["model_name"]).strip()
     run_id = str(uuid4())
     skills_markdown = await _resolve_skill_markdown(db, user_id, request.get("skills") or [])
+    project_context = dict(request.get("schema_context") or {})
+    project_context.update(await _resolve_source_context(db, request.get("project_id"), project_context.get("source_file_ids") or []))
+    
+    # Phase 8: Conversation Memory Integration
+    if request.get("project_id"):
+        memories = await get_project_memories(request.get("project_id"))
+        if memories:
+            project_context["memory_entities"] = memories
+        if request.get("prompt"):
+            asyncio.create_task(extract_and_store_memory(request.get("project_id"), request.get("prompt"), user_id))
+
     started = datetime.utcnow()
-    state = await MODELING_GRAPH.ainvoke({"runtime": runtime, "stage": stage, "agent_name": agent_name, "agent_instruction": agent_instruction, "user_prompt": request.get("prompt", ""), "project_context": request.get("schema_context") or {}, "skills_markdown": skills_markdown})
+    state = await MODELING_GRAPH.ainvoke({"runtime": runtime, "stage": stage, "agent_name": agent_name, "agent_instruction": agent_instruction, "user_prompt": request.get("prompt", ""), "project_context": project_context, "skills_markdown": skills_markdown})
     completed = datetime.utcnow()
     output = state["output"]
     chat_title = await _generate_chat_title(runtime, request.get("prompt", "")) if request.get("generate_chat_title") else None

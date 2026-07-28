@@ -12,6 +12,9 @@ from models.project import ProjectModel, ProjectCreate, ProjectUpdate, ProjectRe
 from models.user import UserModel
 from api.routes.auth import get_current_user
 from core.serialization import mongo_json
+from core.source_parser import parse_source_bytes
+from core.blob_store import upload_file_bytes_async
+from tasks.file_parse_task import parse_file_task
 
 router = APIRouter()
 
@@ -37,7 +40,7 @@ class ProjectFileResponse(BaseModel):
     uploaded_at: datetime
 
 def _to_response(p: dict) -> ProjectResponse:
-    p = dict(p)
+    p = mongo_json(dict(p))
     p["id"] = str(p.pop("_id"))
     return ProjectResponse(**p)
 
@@ -297,6 +300,7 @@ async def push_project_knowledge_graph(project_id: str, req: KnowledgeGraphPushR
     result = await db["knowledge_graph_runs"].insert_one(doc)
     return {"id": str(result.inserted_id), "nodes": len(nodes), "edges": len(edges)}
 
+
 @router.post("/{project_id}/files", response_model=List[ProjectFileResponse])
 async def upload_project_files(
     project_id: str,
@@ -305,28 +309,79 @@ async def upload_project_files(
     current_user: UserModel = Depends(get_current_user),
     db=Depends(get_db),
 ):
-    oid, _ = await _get_authorized_project(project_id, str(current_user.id), db)
+    """Upload files to blob store and enqueue async parsing task."""
+    oid, project = await _get_authorized_project(project_id, str(current_user.id), db)
     saved = []
+    bucket_name = f"silvercraft-project-{project_id}"
+
     for upload in files:
         raw = await upload.read()
+        filename = upload.filename or "uploaded-file"
+        content_type = upload.content_type or "application/octet-stream"
+        
+        # 1. Upload to Blob Store
+        object_name = f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{filename}"
+        uri = await upload_file_bytes_async(bucket_name, object_name, raw, content_type)
+        
+        # 2. Save file record with 'pending' status
         doc = {
             "project_id": str(oid),
             "category": category,
-            "filename": upload.filename,
-            "content_type": upload.content_type or "application/octet-stream",
+            "filename": filename,
+            "content_type": content_type,
             "size": len(raw),
-            "content": raw.decode("utf-8", errors="replace"),
+            "blob_uri": uri,
+            "parse_status": "pending",
             "uploaded_by": str(current_user.id),
             "uploaded_at": datetime.utcnow(),
         }
         result = await db["project_files"].insert_one(doc)
+        file_id = str(result.inserted_id)
+        
+        # 3. Enqueue Celery parsing task
+        parse_file_task.delay(
+            file_id=file_id,
+            project_id=str(oid),
+            uri=uri,
+            filename=filename,
+            content_type=content_type
+        )
+        
         saved.append(ProjectFileResponse(
-            id=str(result.inserted_id),
+            id=file_id,
             project_id=str(oid),
             category=category,
-            filename=upload.filename or "uploaded-file",
-            content_type=doc["content_type"],
+            filename=filename,
+            content_type=content_type,
             size=doc["size"],
             uploaded_at=doc["uploaded_at"],
         ))
     return saved
+
+
+@router.get("/{project_id}/files/{file_id}/status")
+async def get_file_status(
+    project_id: str,
+    file_id: str,
+    current_user: UserModel = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """Get the async parsing status of an uploaded file."""
+    await _get_authorized_project(project_id, str(current_user.id), db)
+    try:
+        oid = ObjectId(file_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid file ID")
+        
+    file_doc = await db["project_files"].find_one({"_id": oid, "project_id": project_id})
+    if not file_doc:
+        raise HTTPException(status_code=404, detail="File not found")
+        
+    return {
+        "id": str(file_doc["_id"]),
+        "filename": file_doc.get("filename"),
+        "parse_status": file_doc.get("parse_status", "pending"),
+        "error_message": file_doc.get("error_message"),
+        "parsed_document_id": file_doc.get("parsed_document_id"),
+        "uploaded_at": file_doc.get("uploaded_at"),
+    }

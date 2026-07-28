@@ -7,13 +7,14 @@ from models.user import UserModel
 from models.workflow import WorkflowModel, WorkflowCreate, WorkflowResponse, WorkflowStep
 from api.routes.auth import get_current_user
 from api.routes.projects import _get_authorized_project
+from core.serialization import mongo_json
 
 router = APIRouter()
 
 def _fmt(w: dict) -> WorkflowResponse:
-    w = dict(w)
-    w["id"] = str(w.pop("_id"))
-    return WorkflowResponse(**w)
+    p = mongo_json(dict(w))
+    p["id"] = str(p.pop("_id"))
+    return WorkflowResponse(**p)
 
 @router.post("/", response_model=WorkflowResponse, status_code=201)
 async def create_workflow(wf: WorkflowCreate, current_user: UserModel = Depends(get_current_user), db=Depends(get_db)):

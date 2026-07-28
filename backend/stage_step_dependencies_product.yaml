@@ -1,0 +1,71 @@
+# Product Layer — Stage Step Dependency Graph
+# Per ADM_2.0_BUILD_SPEC.md §2 (Product Layer table) and §3.6
+
+product:
+  silver_insights:
+    "p1.1_source_connect":
+      downstream: ["p1.2_normalize", "p1.3_preview"]
+      description: "Source connection change invalidates all normalization and preview."
+    "p1.2_normalize":
+      downstream: ["p1.3_preview"]
+      description: "Normalization affects preview output."
+    "p1.3_preview":
+      downstream: []
+      description: "Preview is a leaf — safe patch-in-place."
+
+  kpi_discovery:
+    "p2.1_discover_kpis":
+      downstream: ["p2.2_finalise_kpi", "p2.3_functional_area", "p2.4_business_process", "p2.5_use_case", "p2.6_grain"]
+      description: "KPI discovery changes cascade through all KPI finalization steps."
+    "p2.2_finalise_kpi":
+      downstream: ["p2.3_functional_area", "p2.4_business_process", "p2.5_use_case", "p2.6_grain"]
+      description: "Finalised KPI set drives functional area, process, use case, and grain."
+    "p2.3_functional_area":
+      downstream: ["p2.4_business_process", "p2.5_use_case"]
+      description: "Functional area changes affect business process and use case groupings."
+    "p2.4_business_process":
+      downstream: ["p2.5_use_case", "p2.6_grain"]
+      description: "Business process changes affect use cases and grain declaration."
+    "p2.5_use_case":
+      downstream: ["p2.6_grain"]
+      description: "Use case changes affect grain specification."
+    "p2.6_grain":
+      downstream: []
+      description: "Grain is the final step in KPI discovery."
+
+  kpi_finalization:
+    "p3.1_base_calc_split":
+      downstream: ["p3.2_map_source_entities", "p3.3_generate_calculations", "p3.4_review_entities", "p3.5_identify_pks", "p3.6_generate_relationships"]
+      description: "Base/Calc split governs all downstream KPI finalization steps."
+    "p3.2_map_source_entities":
+      downstream: ["p3.4_review_entities", "p3.5_identify_pks", "p3.6_generate_relationships"]
+      description: "Source entity mapping affects entity review, key identification, and relationships."
+    "p3.3_generate_calculations":
+      downstream: ["p3.4_review_entities"]
+      description: "Calculation changes may require entity review update."
+    "p3.4_review_entities":
+      downstream: ["p3.5_identify_pks", "p3.6_generate_relationships"]
+      description: "Entity review changes affect key identification and relationships."
+    "p3.5_identify_pks":
+      downstream: ["p3.6_generate_relationships"]
+      description: "PK changes affect FK/relationship detection."
+    "p3.6_generate_relationships":
+      downstream: []
+      description: "Relationships is the final step in KPI finalization."
+
+  physical_modeling_product:
+    "p4.1_standardize_names":
+      downstream: ["p4.2_generate_sttm", "p4.3_ddl_dml", "p4.4_finalise_kpi_logic"]
+      description: "Physical name changes propagate to STTM, DDL, and KPI logic."
+    "p4.2_generate_sttm":
+      downstream: ["p4.3_ddl_dml"]
+      description: "STTM changes are reflected in DDL."
+    "p4.3_ddl_dml":
+      downstream: ["p4.4_finalise_kpi_logic", "p4.5_download_artifacts"]
+      description: "DDL changes affect KPI logic expressions and downloadable artifacts."
+    "p4.4_finalise_kpi_logic":
+      downstream: ["p4.5_download_artifacts"]
+      description: "KPI logic finalization regenerates downloadable artifacts."
+    "p4.5_download_artifacts":
+      downstream: []
+      description: "Artifact download is a leaf — no downstream steps."

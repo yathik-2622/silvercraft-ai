@@ -161,15 +161,20 @@ def make_agent_node(stage_name: str):
         if not LANGGRAPH_AVAILABLE:
             raise HTTPException(status_code=503, detail="LangGraph runtime is not installed")
 
-        api_key = settings.GEMINI_API_KEY
+        api_key = settings.LLM_API_KEY
         if not api_key:
-            raise HTTPException(status_code=503, detail="GEMINI_API_KEY is not configured")
+            raise HTTPException(status_code=503, detail="LLM_API_KEY is not configured")
 
-        llm = ChatGoogleGenerativeAI(
-            model=settings.DEFAULT_MODEL,
-            google_api_key=api_key,
-            temperature=0.65,
-        )
+        try:
+            from langchain_openai import ChatOpenAI
+            llm = ChatOpenAI(
+                model=settings.LLM_MODEL,
+                api_key=api_key,
+                base_url=settings.LLM_BASE_URL,
+                temperature=0.65,
+            )
+        except ImportError:
+            raise HTTPException(status_code=503, detail="langchain-openai is not installed")
 
         sys_prompt = _build_system_prompt(stage_name, state["skills"], state["schema_context"])
         last_human_msg = next(

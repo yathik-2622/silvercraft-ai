@@ -106,7 +106,7 @@ async def create_artifact(
         "updated_at": now,
     }
     result = await db["artifacts"].insert_one(doc)
-    return ArtifactResponse(id=str(result.inserted_id), **doc)
+    return mongo_json(ArtifactResponse(id=str(result.inserted_id), **doc).model_dump())
 
 
 @router.get("/chats/{chat_id}/artifacts", response_model=list[ArtifactResponse])
@@ -119,7 +119,7 @@ async def list_artifacts(
     cursor = db["artifacts"].find({"chat_id": chat_id}).sort("created_at", 1)
     artifacts = await cursor.to_list(length=200)
     return [
-        ArtifactResponse(id=str(a["_id"]), **{k: v for k, v in a.items() if k != "_id"})
+        mongo_json(ArtifactResponse(id=str(a["_id"]), **{k: v for k, v in a.items() if k != "_id"}).model_dump())
         for a in artifacts
     ]
 

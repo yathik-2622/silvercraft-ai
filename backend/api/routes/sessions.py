@@ -54,7 +54,7 @@ async def create_chat(project_id: str, body: ChatCreate, current_user: UserModel
     now = datetime.utcnow()
     doc = {"project_id": project_id, "workflow_id": body.workflow_id, "title": body.title, "created_by": str(current_user.id), "messages": [], "created_at": now, "updated_at": now}
     result = await db["chats"].insert_one(doc)
-    return {"id": str(result.inserted_id), **doc}
+    return mongo_json({"id": str(result.inserted_id), **doc})
 
 
 @router.get("/projects/{project_id}/chats")
