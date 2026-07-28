@@ -35,6 +35,7 @@ interface MarketplaceViewProps {
 }
 
 export const MarketplaceView: React.FC<MarketplaceViewProps> = ({
+  predefinedAgents,
   customAgents,
   pipelineSteps,
   onAddAgentToPipeline,

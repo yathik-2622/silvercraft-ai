@@ -3,13 +3,13 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Bot, ChevronDown, ChevronLeft, ChevronRight, Copy, Database, FileText, FileUp, GitBranch, LoaderCircle, PanelRightClose, PanelRightOpen, Pencil, Plus, RotateCcw, Search, Send, Sparkles, Table2, Trash2, X } from 'lucide-react';
+import { Bot, ChevronDown, ChevronLeft, ChevronRight, Copy, Database, FileText, FileUp, GitBranch, Layers, LoaderCircle, PanelRightClose, PanelRightOpen, Pencil, Plus, RotateCcw, Search, Send, Sparkles, Table2, Trash2, X } from 'lucide-react';
 import { artifactsApi, orchestratorApi, projectsApi, sessionsApi, settingsApi, skillsApi, workflowsApi } from '../api/client';
 import { FollowUpActions } from '../components/studio/FollowUpActions';
 import { IconButton } from '../components/studio/IconButton';
 import { StructuredCanvas } from '../components/studio/StructuredCanvas';
 
-type Message = { id: string; sender: 'user' | 'assistant' | 'system'; text: string; stage?: string };
+type Message = { id: string; sender: 'user' | 'assistant' | 'system'; text: string; stage?: string; eventType?: string };
 type Artifact = { id: string; title: string; stage: string; content: string; status: 'awaiting_hitl' | 'approved' };
 type Chat = { id: string; title: string; updated_at?: string };
 type Skill = { id: string; name: string; description: string; content: string };
@@ -79,7 +79,7 @@ export const StudioPage: React.FC = () => {
       setMessages(response.data.messages ?? []); 
       setAttachments((response.data.attachments ?? []).map((file: any) => ({ id: file.file_id, name: file.filename })));
       setArtifacts((artifactResponse.data ?? []).map((artifact: any) => ({ id: artifact.id, title: artifact.title, stage: artifact.stage, content: artifact.content, status: artifact.status })));
-      setExpanded([...new Set((artifactResponse.data ?? []).map((artifact: any) => artifact.stage))]);
+      setExpanded([...new Set((artifactResponse.data ?? []).map((artifact: any) => artifact.stage))] as string[]);
     } finally {
       setIsChatLoading(false);
     }
