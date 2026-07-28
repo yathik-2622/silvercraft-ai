@@ -1,9 +1,0 @@
-table_name,column_name,data_type,is_nullable,description,is_primary_key
-raw_users,user_id,VARCHAR,False,Unique identifier for the user,True
-raw_users,email,VARCHAR,False,User's email address,False
-raw_users,created_at,TIMESTAMP,False,Timestamp when the user registered,False
-raw_users,status,VARCHAR,True,Current status of the user (e.g. active, inactive),False
-raw_transactions,tx_id,VARCHAR,False,Unique transaction ID,True
-raw_transactions,user_id,VARCHAR,False,Foreign key to raw_users,False
-raw_transactions,amount,DECIMAL(10,2),False,Transaction amount in USD,False
-raw_transactions,tx_date,TIMESTAMP,False,Date and time of transaction,False

@@ -1,5 +1,0 @@
-product_id,product_name,category,unit_price,active_flag,last_updated
-P-01,Wireless Mouse,Electronics,750.00,Y,2024-01-01
-P-02,USB-C Cable,Electronics,400.00,Y,2024-01-01
-P-03,Mechanical Keyboard,Electronics,1400.00,Y,2024-01-01
-P-04,Desk Lamp,Home,650.00,N,2023-11-15

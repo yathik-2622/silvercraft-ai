@@ -8,7 +8,7 @@ from core.runtime_settings import (
     merge_settings_update,
     sanitize_user_settings,
 )
-from database import get_db
+from db.core import get_db
 from models.user import UserModel
 
 router = APIRouter()

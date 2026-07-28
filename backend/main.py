@@ -23,14 +23,14 @@ from config import settings
 from database import connect_to_mongo, close_mongo_connection
 from middleware.error_handler import register_error_handlers
 
-from api.routes import a2a, artifacts, auth, mcp, projects, skills, agents, workflows
+from api.routes import artifacts, auth, mcp, projects, chats, uploads
 from api.routes import settings as settings_routes
 from api.routes import sessions
 from api.routes.gates import router as gates_router
-from api.routes.db_connections import router as db_connections_router
-from api.routes.git_push import router as git_push_router
+from db.routes import router as db_connections_router
+from skills.routes import router as skills_router
 from api.websocket import router as ws_router
-from orchestrator import orchestrator_router
+from orchestrator.router import orchestrator_router
 
 # ─── App factory ─────────────────────────────────────────────────────────────
 
@@ -50,7 +50,7 @@ register_error_handlers(app)
 # ─── CORS ────────────────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3002", "http://localhost:5173", "http://localhost:3000", "*"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -71,26 +71,25 @@ async def shutdown_db_client():
 V1 = settings.API_V1_STR
 
 # Auth
-app.include_router(auth.router,              prefix=f"{V1}/auth",            tags=["Auth"])
+app.include_router(auth.router,              prefix=f"{V1}/auth",            tags=["Authentication"])
 
-# Projects — includes Git push sub-routes
+# Projects
 app.include_router(projects.router,          prefix=f"{V1}/projects",         tags=["Projects"])
-app.include_router(git_push_router,          prefix=f"{V1}/projects",         tags=["Git Push"])
+
+# Chats (tied to projects)
+app.include_router(chats.router,             prefix=f"{V1}/projects",         tags=["Chats"])
+
+# Uploads
+app.include_router(uploads.router,           prefix=f"{V1}/uploads",          tags=["Uploads"])
 
 # Skills (CRUD + enhance/promote/download)
-app.include_router(skills.router,            prefix=f"{V1}/skills",           tags=["Skills"])
-
-# Agents (registry + run + peer-call + A2A agent cards)
-app.include_router(agents.router,            prefix=f"{V1}/agents",           tags=["Agents"])
+app.include_router(skills_router,            prefix=f"{V1}/skills",           tags=["Skills"])
 
 # Gate control + push targets (sessions/{id}/gates/* and sessions/{id}/push/*)
 app.include_router(gates_router,             prefix=V1,                       tags=["Gate Control"])
 
 # DB Connections
 app.include_router(db_connections_router,    prefix=f"{V1}",                  tags=["DB Connections"])
-
-# Workflows
-app.include_router(workflows.router,         prefix=f"{V1}/workflows",        tags=["Workflows"])
 
 # Settings (LLM provider profiles)
 app.include_router(settings_routes.router,   prefix=f"{V1}/settings",         tags=["Settings"])
@@ -100,9 +99,6 @@ app.include_router(sessions.router,          prefix=V1,                       ta
 
 # Artifacts (export/download)
 app.include_router(artifacts.router,         prefix=V1,                       tags=["Artifacts"])
-
-# Legacy A2A compat
-app.include_router(a2a.router,               prefix=f"{V1}/a2a",              tags=["A2A"])
 
 # MCP bridge
 app.include_router(mcp.router,               prefix=f"{V1}/mcp",              tags=["MCP"])

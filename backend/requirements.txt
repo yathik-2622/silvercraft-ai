@@ -22,3 +22,12 @@ langchain-openai==0.2.9
 celery==5.4.0
 redis==5.2.0
 boto3==1.34.144
+langchain-community
+pdfplumber
+unstructured
+pandas
+sqlalchemy
+neo4j
+asyncpg
+openpyxl
+mcp

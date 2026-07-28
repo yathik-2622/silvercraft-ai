@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any
@@ -7,14 +7,11 @@ import io
 import json
 import zipfile
 from bson import ObjectId
-from database import get_db
-from models.project import ProjectModel, ProjectCreate, ProjectUpdate, ProjectResponse, ProjectHistoryEntry, ProjectTeamMemberUpdate
+from db.core import get_db
+from models.project import ProjectModel, ProjectCreate, ProjectUpdate, ProjectResponse, ProjectHistoryEntry
 from models.user import UserModel
 from api.routes.auth import get_current_user
 from core.serialization import mongo_json
-from core.source_parser import parse_source_bytes
-from core.blob_store import upload_file_bytes_async
-from tasks.file_parse_task import parse_file_task
 
 router = APIRouter()
 
@@ -44,15 +41,18 @@ def _to_response(p: dict) -> ProjectResponse:
     p["id"] = str(p.pop("_id"))
     return ProjectResponse(**p)
 
-async def _get_authorized_project(project_id: str, user_id: str, db):
+async def _get_authorized_project(project_id_str: str, user_id: str, db):
     try:
-        oid = ObjectId(project_id)
+        oid = ObjectId(project_id_str)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid project ID")
     project = await db["projects"].find_one({"_id": oid})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    if project["owner_id"] != user_id and user_id not in project.get("shared_with", []):
+    
+    is_owner = project.get("user_id") == user_id
+    is_member = any(m.get("user_id") == user_id for m in project.get("members", []))
+    if not is_owner and not is_member:
         raise HTTPException(status_code=403, detail="Not authorized to access this project")
     return oid, project
 
@@ -110,13 +110,23 @@ def _docx_bytes(text: str) -> bytes:
 
 @router.post("/", response_model=ProjectResponse, status_code=201)
 async def create_project(project: ProjectCreate, current_user: UserModel = Depends(get_current_user), db=Depends(get_db)):
-    collaborator_emails = list(dict.fromkeys([email.strip().lower() for email in project.collaborators if email.strip().lower() != current_user.email]))
-    registered = await db["users"].find({"email": {"$in": collaborator_emails}}, {"_id": 1}).to_list(length=200)
+    # Validate the current user matches the payload's user_id or override it
+    user_id = str(current_user.id)
+    
+    members = []
+    for member_id in project.team_members:
+        if member_id != user_id:
+            members.append({"user_id": member_id, "role": "editor", "added_at": datetime.utcnow(), "added_by": user_id})
+
     new_project = ProjectModel(
-        name=project.name, description=project.description, owner_id=str(current_user.id),
-        domain=project.domain, sub_domain=project.sub_domain, layer=project.layer,
-        execution_flow=project.execution_flow, workflow_mode=project.workflow_mode,
-        collaborators=collaborator_emails, shared_with=[str(member["_id"]) for member in registered],
+        project_id=project.project_id,
+        user_id=user_id,
+        name=project.name, 
+        description=project.description,
+        domain=project.domain, 
+        sub_domain=project.sub_domain, 
+        layer=project.layer,
+        members=members
     )
     result = await db["projects"].insert_one(new_project.model_dump(by_alias=True, exclude={"id"}))
     created = await db["projects"].find_one({"_id": result.inserted_id})
@@ -125,7 +135,7 @@ async def create_project(project: ProjectCreate, current_user: UserModel = Depen
 @router.get("/", response_model=List[ProjectResponse])
 async def list_projects(current_user: UserModel = Depends(get_current_user), db=Depends(get_db)):
     user_id = str(current_user.id)
-    cursor = db["projects"].find({"$or": [{"owner_id": user_id}, {"shared_with": user_id}]})
+    cursor = db["projects"].find({"$or": [{"user_id": user_id}, {"members.user_id": user_id}]})
     projects = await cursor.to_list(length=200)
     return [_to_response(p) for p in projects]
 
@@ -133,10 +143,10 @@ async def list_projects(current_user: UserModel = Depends(get_current_user), db=
 async def list_grouped_projects(current_user: UserModel = Depends(get_current_user), db=Depends(get_db)):
     """Dashboard query: separate owner and shared-project cards for the current user."""
     user_id = str(current_user.id)
-    projects = await db["projects"].find({"$or": [{"owner_id": user_id}, {"shared_with": user_id}]}).sort("updated_at", -1).to_list(length=200)
+    projects = await db["projects"].find({"$or": [{"user_id": user_id}, {"members.user_id": user_id}]}).sort("updated_at", -1).to_list(length=200)
     return {
-        "owned_projects": [_to_response(project).model_dump() for project in projects if project.get("owner_id") == user_id],
-        "collaborator_projects": [_to_response(project).model_dump() for project in projects if project.get("owner_id") != user_id],
+        "owned_projects": [_to_response(project).model_dump() for project in projects if project.get("user_id") == user_id],
+        "collaborator_projects": [_to_response(project).model_dump() for project in projects if project.get("user_id") != user_id],
     }
 
 @router.get("/{project_id}/history")
@@ -167,7 +177,9 @@ async def get_project(project_id: str, current_user: UserModel = Depends(get_cur
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     user_id = str(current_user.id)
-    if project["owner_id"] != user_id and user_id not in project.get("shared_with", []):
+    is_owner = project.get("user_id") == user_id
+    is_member = any(m.get("user_id") == user_id for m in project.get("members", []))
+    if not is_owner and not is_member:
         raise HTTPException(status_code=403, detail="Not authorized to access this project")
     return _to_response(project)
 
@@ -181,56 +193,33 @@ async def update_project(project_id: str, project_update: ProjectUpdate, current
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     user_id = str(current_user.id)
-    if project["owner_id"] != user_id and user_id not in project.get("shared_with", []):
-        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    if project.get("user_id") != user_id:
+        raise HTTPException(status_code=403, detail="Not authorized, only owners can update projects")
+        
     update_data = project_update.model_dump(exclude_unset=True)
+    
+    # Handle team members explicitly
+    if "team_members" in update_data:
+        new_member_ids = update_data.pop("team_members")
+        existing_members = project.get("members", [])
+        
+        # Keep existing roles if they were already members
+        updated_members = []
+        for mid in new_member_ids:
+            if mid == user_id: continue
+            
+            existing = next((m for m in existing_members if m.get("user_id") == mid), None)
+            if existing:
+                updated_members.append(existing)
+            else:
+                updated_members.append({"user_id": mid, "role": "editor", "added_at": datetime.utcnow(), "added_by": user_id})
+                
+        update_data["members"] = updated_members
+
     update_data["updated_at"] = datetime.utcnow()
-    if "canvas_state" in update_data and project.get("canvas_state"):
-        history_entry = ProjectHistoryEntry(state=project["canvas_state"], saved_by=user_id)
-        await db["projects"].update_one({"_id": oid}, {"$push": {"history": history_entry.model_dump()}})
+    
     await db["projects"].update_one({"_id": oid}, {"$set": update_data})
-    updated = await db["projects"].find_one({"_id": oid})
-    return _to_response(updated)
-
-@router.post("/{project_id}/team-members", response_model=ProjectResponse)
-async def add_team_member(project_id: str, payload: ProjectTeamMemberUpdate, current_user: UserModel = Depends(get_current_user), db=Depends(get_db)):
-    try:
-        oid = ObjectId(project_id)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid project ID")
-    project = await db["projects"].find_one({"_id": oid})
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    if project["owner_id"] != str(current_user.id):
-        raise HTTPException(status_code=403, detail="Only the project owner can manage team members")
-    member = await db["users"].find_one({"email": payload.email})
-    if not member:
-        raise HTTPException(status_code=404, detail="No registered user found for that email")
-    member_id = str(member["_id"])
-    if member_id == str(current_user.id):
-        raise HTTPException(status_code=400, detail="Project owner is already a member")
-    await db["projects"].update_one(
-        {"_id": oid},
-        {"$addToSet": {"shared_with": member_id}, "$set": {"updated_at": datetime.utcnow()}},
-    )
-    updated = await db["projects"].find_one({"_id": oid})
-    return _to_response(updated)
-
-@router.delete("/{project_id}/team-members/{member_id}", response_model=ProjectResponse)
-async def remove_team_member(project_id: str, member_id: str, current_user: UserModel = Depends(get_current_user), db=Depends(get_db)):
-    try:
-        oid = ObjectId(project_id)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid project ID")
-    project = await db["projects"].find_one({"_id": oid})
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    if project["owner_id"] != str(current_user.id):
-        raise HTTPException(status_code=403, detail="Only the project owner can manage team members")
-    await db["projects"].update_one(
-        {"_id": oid},
-        {"$pull": {"shared_with": member_id}, "$set": {"updated_at": datetime.utcnow()}},
-    )
     updated = await db["projects"].find_one({"_id": oid})
     return _to_response(updated)
 
@@ -243,7 +232,7 @@ async def delete_project(project_id: str, current_user: UserModel = Depends(get_
     project = await db["projects"].find_one({"_id": oid})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    if project["owner_id"] != str(current_user.id):
+    if project.get("user_id") != str(current_user.id):
         raise HTTPException(status_code=403, detail="Only the project owner can delete it")
     await db["projects"].delete_one({"_id": oid})
 
@@ -300,88 +289,3 @@ async def push_project_knowledge_graph(project_id: str, req: KnowledgeGraphPushR
     result = await db["knowledge_graph_runs"].insert_one(doc)
     return {"id": str(result.inserted_id), "nodes": len(nodes), "edges": len(edges)}
 
-
-@router.post("/{project_id}/files", response_model=List[ProjectFileResponse])
-async def upload_project_files(
-    project_id: str,
-    category: str = Form(...),
-    files: List[UploadFile] = File(...),
-    current_user: UserModel = Depends(get_current_user),
-    db=Depends(get_db),
-):
-    """Upload files to blob store and enqueue async parsing task."""
-    oid, project = await _get_authorized_project(project_id, str(current_user.id), db)
-    saved = []
-    bucket_name = f"silvercraft-project-{project_id}"
-
-    for upload in files:
-        raw = await upload.read()
-        filename = upload.filename or "uploaded-file"
-        content_type = upload.content_type or "application/octet-stream"
-        
-        # 1. Upload to Blob Store
-        object_name = f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{filename}"
-        uri = await upload_file_bytes_async(bucket_name, object_name, raw, content_type)
-        
-        # 2. Save file record with 'pending' status
-        doc = {
-            "project_id": str(oid),
-            "category": category,
-            "filename": filename,
-            "content_type": content_type,
-            "size": len(raw),
-            "blob_uri": uri,
-            "parse_status": "pending",
-            "uploaded_by": str(current_user.id),
-            "uploaded_at": datetime.utcnow(),
-        }
-        result = await db["project_files"].insert_one(doc)
-        file_id = str(result.inserted_id)
-        
-        # 3. Enqueue Celery parsing task
-        parse_file_task.delay(
-            file_id=file_id,
-            project_id=str(oid),
-            uri=uri,
-            filename=filename,
-            content_type=content_type
-        )
-        
-        saved.append(ProjectFileResponse(
-            id=file_id,
-            project_id=str(oid),
-            category=category,
-            filename=filename,
-            content_type=content_type,
-            size=doc["size"],
-            uploaded_at=doc["uploaded_at"],
-        ))
-    return saved
-
-
-@router.get("/{project_id}/files/{file_id}/status")
-async def get_file_status(
-    project_id: str,
-    file_id: str,
-    current_user: UserModel = Depends(get_current_user),
-    db=Depends(get_db),
-):
-    """Get the async parsing status of an uploaded file."""
-    await _get_authorized_project(project_id, str(current_user.id), db)
-    try:
-        oid = ObjectId(file_id)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid file ID")
-        
-    file_doc = await db["project_files"].find_one({"_id": oid, "project_id": project_id})
-    if not file_doc:
-        raise HTTPException(status_code=404, detail="File not found")
-        
-    return {
-        "id": str(file_doc["_id"]),
-        "filename": file_doc.get("filename"),
-        "parse_status": file_doc.get("parse_status", "pending"),
-        "error_message": file_doc.get("error_message"),
-        "parsed_document_id": file_doc.get("parsed_document_id"),
-        "uploaded_at": file_doc.get("uploaded_at"),
-    }

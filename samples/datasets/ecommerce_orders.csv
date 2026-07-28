@@ -1,6 +1,0 @@
-order_id,customer_id,order_date,status,total_amount,payment_method,shipping_address,shipping_city,shipping_country
-ORD-5001,CUST-1001,2023-06-01,Delivered,150.50,Credit Card,123 Maple St,New York,USA
-ORD-5002,CUST-1002,2023-06-05,Shipped,89.99,PayPal,456 Oak Ave,Los Angeles,USA
-ORD-5003,CUST-1001,2023-06-10,Delivered,25.00,Credit Card,123 Maple St,New York,USA
-ORD-5004,CUST-1003,2023-06-11,Processing,210.75,Debit Card,789 Pine Rd,London,UK
-ORD-5005,CUST-1005,2023-06-12,Delivered,45.00,PayPal,654 Cedar Ln,Sydney,Australia

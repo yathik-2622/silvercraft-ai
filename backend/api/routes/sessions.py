@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from api.routes.auth import get_current_user
 from api.routes.projects import _get_authorized_project
-from database import get_db
+from db.core import get_db
 from models.user import UserModel
 from core.serialization import mongo_json
 
