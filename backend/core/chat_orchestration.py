@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from urllib.parse import urlparse
 from typing import Any, TypedDict
@@ -22,6 +23,8 @@ try:
     LANGGRAPH_AVAILABLE = True
 except ImportError:
     LANGGRAPH_AVAILABLE = False
+
+logger = logging.getLogger(__name__)
 
 
 STAGE_AGENTS = {
@@ -202,7 +205,9 @@ async def run_chat_orchestration(db, user_id: str, request: dict[str, Any]) -> d
     skills_markdown = await _resolve_skill_markdown(db, user_id, request.get("skills") or [])
     project_context = dict(request.get("schema_context") or {})
     project_context.update(await _resolve_source_context(db, request.get("project_id"), project_context.get("source_file_ids") or []))
-    
+
+    logger.info("[orchestration] run_id=%s stage=%s agent=%s project=%s chat=%s skills=%s", run_id, stage, agent_name, request.get("project_id"), request.get("chat_id"), request.get("skills") or [])
+
     # Phase 8: Conversation Memory Integration
     if request.get("project_id"):
         memories = await get_project_memories(request.get("project_id"))
@@ -212,9 +217,11 @@ async def run_chat_orchestration(db, user_id: str, request: dict[str, Any]) -> d
             asyncio.create_task(extract_and_store_memory(request.get("project_id"), request.get("prompt"), user_id))
 
     started = datetime.utcnow()
+    logger.info("[orchestration] run_id=%s invoking LangGraph model", run_id)
     state = await MODELING_GRAPH.ainvoke({"runtime": runtime, "stage": stage, "agent_name": agent_name, "agent_instruction": agent_instruction, "user_prompt": request.get("prompt", ""), "project_context": project_context, "skills_markdown": skills_markdown})
     completed = datetime.utcnow()
     output = state["output"]
+    logger.info("[orchestration] run_id=%s completed in %sms mode=%s", run_id, (completed - started).total_seconds() * 1000, state.get("response_mode"))
     chat_title = await _generate_chat_title(runtime, request.get("prompt", "")) if request.get("generate_chat_title") else None
     if state.get("response_mode") == "chat":
         event = {"run_id": run_id, "agent_name": "master-orchestrator", "stage": stage, "framework": "langgraph", "status": "completed", "started_at": started, "completed_at": completed, "summary": output[:500]}

@@ -16,9 +16,6 @@ class Settings(BaseSettings):
     LLM_API_KEY: str = ""
     LLM_BASE_URL: str = "https://api.openai.com/v1"
     LLM_MODEL: str = "gpt-4o"
-    # Gemini legacy key (kept for backward compat with older orchestrator path)
-    GEMINI_API_KEY: Optional[str] = None
-    DEFAULT_MODEL: str = "gemini-2.0-flash"
 
     # ── Redis (Celery broker + result backend + WebSocket pub/sub) ────────────
     # Per BUILD_SPEC §4.1 and API_ERRORS_AND_TOPOLOGY §4
@@ -78,6 +75,12 @@ class Settings(BaseSettings):
     TIMEOUT_SKILL_CURATOR: int = 30
     TIMEOUT_PEER_CALL: int = 20
 
+
+    # ── Embeddings ──────────────────────────────────────────
+    EMBEDDING_MODEL: str = "text-embedding-3-small"
+    EMBEDDING_API_KEY: Optional[str] = None  # Falls back to LLM_API_KEY if not set
+    CHUNK_SIZE: int = 1000
+    CHUNK_OVERLAP: int = 200
     model_config = {
         "case_sensitive": True,
         "env_file": ".env",

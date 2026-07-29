@@ -13,11 +13,21 @@ from config import settings
 from database import get_db
 
 try:
-    from langchain_openai import ChatOpenAI
+    from langchain_openai import ChatOpenAI, OpenAIEmbeddings
     from langchain_core.messages import HumanMessage, SystemMessage
     LANGCHAIN_AVAILABLE = True
 except ImportError:
     LANGCHAIN_AVAILABLE = False
+
+
+def get_embedding_model():
+    """Return an OpenAIEmbeddings instance using the configured embedding model."""
+    api_key = settings.EMBEDDING_API_KEY or settings.LLM_API_KEY
+    return OpenAIEmbeddings(
+        model=settings.EMBEDDING_MODEL,
+        api_key=api_key or settings.LLM_API_KEY,
+        openai_base_url=settings.LLM_BASE_URL,
+    )
 
 
 _MEMORY_SYSTEM_PROMPT = """

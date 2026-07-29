@@ -21,8 +21,8 @@ WorkflowMode = Literal["default", "custom"]
 class SourceRef(BaseModel):
     """What the SourceIntelligenceAgent will read."""
     source_type: SourceType = "file"
-    # File source
-    blob_uris: List[str] = []           # e.g. ["s3://silvercraft-files/abc123.csv"]
+    # File source (local filesystem)
+    file_paths: List[str] = []       # e.g. ["/home/yathik/ADM_2.O/silvercraft-ai/uploads/project_id/20260729_file.csv"]
     # DB source
     connection_id: Optional[str] = None # db_connections._id
     selected_tables: List[str] = []     # empty = all tables in schema

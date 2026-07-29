@@ -5,7 +5,9 @@ from typing import List, Dict, Any
 from datetime import datetime
 import io
 import json
+import os
 import zipfile
+import logging
 from bson import ObjectId
 from database import get_db
 from models.project import ProjectModel, ProjectCreate, ProjectUpdate, ProjectResponse, ProjectHistoryEntry, ProjectTeamMemberUpdate
@@ -13,8 +15,10 @@ from models.user import UserModel
 from api.routes.auth import get_current_user
 from core.serialization import mongo_json
 from core.source_parser import parse_source_bytes
-from core.blob_store import upload_file_bytes_async
+from core.local_blob_store import upload_file_bytes_async
 from tasks.file_parse_task import parse_file_task
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -301,6 +305,10 @@ async def push_project_knowledge_graph(project_id: str, req: KnowledgeGraphPushR
     return {"id": str(result.inserted_id), "nodes": len(nodes), "edges": len(edges)}
 
 
+SUPPORTED_EXTENSIONS = {'.csv', '.json', '.pdf', '.docx', '.doc', '.txt', '.md', '.py', '.xlsx', '.xls'}
+SUPPORTED_CONTENT_TYPES = {'text/csv', 'application/json', 'application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/msword', 'text/plain', 'application/octet-stream', 'text/markdown', 'text/x-python', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/vnd.ms-excel'}
+
+
 @router.post("/{project_id}/files", response_model=List[ProjectFileResponse])
 async def upload_project_files(
     project_id: str,
@@ -309,20 +317,29 @@ async def upload_project_files(
     current_user: UserModel = Depends(get_current_user),
     db=Depends(get_db),
 ):
-    """Upload files to blob store and enqueue async parsing task."""
+    """Upload files to local filesystem and enqueue async parsing task."""
     oid, project = await _get_authorized_project(project_id, str(current_user.id), db)
     saved = []
-    bucket_name = f"silvercraft-project-{project_id}"
+
+    logger.info("[upload] project_id=%s user=%s category=%s files=%d", project_id, current_user.id, category, len(files))
 
     for upload in files:
-        raw = await upload.read()
         filename = upload.filename or "uploaded-file"
+        ext = os.path.splitext(filename)[1].lower()
         content_type = upload.content_type or "application/octet-stream"
-        
-        # 1. Upload to Blob Store
+
+        if ext not in SUPPORTED_EXTENSIONS and content_type not in SUPPORTED_CONTENT_TYPES:
+            logger.warning("[upload] project_id=%s rejected unsupported file=%s ext=%s content_type=%s", project_id, filename, ext, content_type)
+            continue
+
+        raw = await upload.read()
+
+        logger.info("[upload] project_id=%s uploading filename=%s size=%d", project_id, filename, len(raw))
+
+        # 1. Save to local filesystem
         object_name = f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{filename}"
-        uri = await upload_file_bytes_async(bucket_name, object_name, raw, content_type)
-        
+        file_path = await upload_file_bytes_async(str(oid), object_name, raw, content_type)
+
         # 2. Save file record with 'pending' status
         doc = {
             "project_id": str(oid),
@@ -330,23 +347,24 @@ async def upload_project_files(
             "filename": filename,
             "content_type": content_type,
             "size": len(raw),
-            "blob_uri": uri,
+            "file_path": file_path,
             "parse_status": "pending",
             "uploaded_by": str(current_user.id),
             "uploaded_at": datetime.utcnow(),
         }
         result = await db["project_files"].insert_one(doc)
         file_id = str(result.inserted_id)
-        
+
         # 3. Enqueue Celery parsing task
+        logger.info("[upload] project_id=%s enqueuing parse task file_id=%s", project_id, file_id)
         parse_file_task.delay(
             file_id=file_id,
             project_id=str(oid),
-            uri=uri,
+            file_path=file_path,
             filename=filename,
             content_type=content_type
         )
-        
+
         saved.append(ProjectFileResponse(
             id=file_id,
             project_id=str(oid),
@@ -356,6 +374,7 @@ async def upload_project_files(
             size=doc["size"],
             uploaded_at=doc["uploaded_at"],
         ))
+    logger.info("[upload] project_id=%s saved %d files", project_id, len(saved))
     return saved
 
 

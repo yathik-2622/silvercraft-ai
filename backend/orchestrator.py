@@ -11,6 +11,7 @@ Powers:
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncIterator
 from typing import Any, Dict, List, Optional, TypedDict
 
@@ -22,7 +23,6 @@ from pydantic import BaseModel
 try:
     from langgraph.graph import END, StateGraph
     from langchain_core.messages import HumanMessage, SystemMessage
-    from langchain_google_genai import ChatGoogleGenerativeAI
     LANGGRAPH_AVAILABLE = True
 except ImportError:
     LANGGRAPH_AVAILABLE = False
@@ -33,6 +33,8 @@ from api.routes.auth import get_current_user
 from api.routes.skills import _industry_skills
 from models.user import UserModel
 from core.chat_orchestration import run_chat_orchestration
+
+logger = logging.getLogger(__name__)
 
 orchestrator_router = APIRouter()
 
@@ -251,7 +253,7 @@ class OrchestratorRequest(BaseModel):
 class OrchestratorResponse(BaseModel):
     reply: str
     stage: str
-    source: str                         # langgraph-gemini | a2a-remote
+    source: str                         # langgraph | a2a-remote
     suggested_workflow: Optional[List[str]] = None
     agent_events: List[Dict[str, Any]] = []
     artifact: Optional[Dict[str, Any]] = None
@@ -295,6 +297,8 @@ async def run_orchestrator(req: OrchestratorRequest, current_user: UserModel = D
     active_skills = list(req.skills)
     suggested_workflow: Optional[List[str]] = None
 
+    logger.info("[orchestrator] run start user=%s stage=%s prompt=%s skills=%s", current_user.id, req.current_stage, req.prompt[:100], active_skills)
+
     if slash_skill:
         if slash_skill not in active_skills:
             active_skills.append(slash_skill)
@@ -329,6 +333,7 @@ async def run_orchestrator(req: OrchestratorRequest, current_user: UserModel = D
             "skills": active_skills,
             "schema_context": req.schema_context,
         })
+        logger.info("[orchestrator] run_id=N/A A2A remote agent=%s", req.remote_agent_uri)
         return OrchestratorResponse(
             reply=reply,
             stage=req.current_stage,
@@ -336,7 +341,7 @@ async def run_orchestrator(req: OrchestratorRequest, current_user: UserModel = D
             suggested_workflow=suggested_workflow,
         )
 
-    # 3. Master/sub-agent runtime uses the configured OpenAI-compatible provider, not optional Gemini imports.
+    # 3. Master/sub-agent runtime uses the configured OpenAI-compatible provider.
     chat = None
     if req.chat_id:
         try:
@@ -345,7 +350,9 @@ async def run_orchestrator(req: OrchestratorRequest, current_user: UserModel = D
         except Exception:
             chat = None
     should_title = bool(chat and chat.get("created_by") == str(current_user.id) and chat.get("title") in {"Modeling conversation", "New modeling conversation"})
+    logger.info("[orchestrator] Starting orchestration for chat_id=%s stage=%s model=%s", req.chat_id, req.current_stage, req.model_name)
     result = await run_chat_orchestration(db, str(current_user.id), {**req.model_dump(), "skills": active_skills, "generate_chat_title": should_title})
+    logger.info("[orchestrator] Orchestration completed for chat_id=%s source=%s has_artifact=%s", req.chat_id, result.get("source"), result.get("artifact") is not None)
     if chat and result.get("chat_title"):
         try:
             if chat.get("created_by") == str(current_user.id):
@@ -481,7 +488,7 @@ async def plan_orchestrator(req: OrchestratorPlanRequest, current_user: UserMode
                 "description": description,
                 "framework": "A2A Remote" if agent_type == "remote" else "Local Agent",
                 "status": "idle",
-                "model": settings.DEFAULT_MODEL,
+                "model": settings.LLM_MODEL,
                 "skills": ", ".join(skills),
                 "inputs": ", ".join([*(req.source_files or ["all project sources"]), *(req.existing_model_files or []), req.standard_naming_notes or "standard naming notes"]),
                 "knowledgeFiles": "",
