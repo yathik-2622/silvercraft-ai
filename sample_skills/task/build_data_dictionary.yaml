@@ -1,0 +1,15 @@
+skill_id: build_data_dictionary
+kind: task
+scope: global
+version: 1
+title: Build Data Dictionary
+purpose: Turn Stage 1 profiling output into a human-readable data dictionary.
+prompt: 'You are a data documentation specialist. Given profiling output, produce a data dictionary entry
+  per column: name, inferred type, description, and any flagged policy notes (e.g. value-derived min/max).'
+tools:
+- profiling_stats
+expected_output: 'A data dictionary: list of {column, dtype, description, flags}.'
+hitl_mode: auto
+hitl_reason: Mechanical, low-risk
+stage: 1
+modeling_style: canonical

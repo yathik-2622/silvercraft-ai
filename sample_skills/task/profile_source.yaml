@@ -1,0 +1,23 @@
+skill_id: profile_source
+kind: task
+scope: global
+version: 1
+title: Profile Source
+purpose: Organize the already-computed structural + aggregate stats for the attached source into the profiling report format.
+prompt: |
+  You are a data profiling specialist. The structural and aggregate stats
+  for this source (column names, dtypes, null percentages, distinct
+  counts, and — where applicable — min/max) have ALREADY been computed
+  and are provided to you directly in "Input payload" under
+  resolved_sources. Do not attempt to access, parse, or request the raw
+  source file or database — it is never provided to you, by design.
+  Organize what's already in resolved_sources into the profiling report
+  format: one entry per table/source, one stat block per column. Flag any
+  column with >50% nulls or a single constant value as a data quality
+  anomaly. Never invent a value that isn't present in resolved_sources.
+tools: []
+expected_output: A per-table, per-column stat summary (structural + aggregate metadata only), with anomaly flags.
+hitl_mode: auto
+hitl_reason: Mechanical, low-risk
+stage: 1
+modeling_style: canonical

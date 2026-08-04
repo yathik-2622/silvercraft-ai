@@ -1,0 +1,35 @@
+skill_id: workflow_canonical
+kind: workflow
+scope: global
+version: 1
+title: Canonical / 3NF Modeling Workflow
+purpose: 'End-to-end Canonical/3NF modeling: profiling through DDL + STTM generation.'
+prompt: Drive the Canonical/3NF Stage 1-4 pipeline over the attached source.
+tools: []
+expected_output: An approved Execution Contract covering all 4 stages.
+modeling_style: canonical
+task_list:
+- task_id: profile_source
+  skill_id: profile_source
+- task_id: build_data_dictionary
+  skill_id: build_data_dictionary
+- task_id: cluster_subject_areas
+  skill_id: cluster_subject_areas
+- task_id: classify_sensitivity
+  skill_id: classify_sensitivity
+- task_id: discover_relationships
+  skill_id: discover_relationships
+- task_id: generate_conceptual_entities
+  skill_id: generate_conceptual_entities
+- task_id: generate_conceptual_relationships
+  skill_id: generate_conceptual_relationships
+- task_id: classify_entity_role
+  skill_id: classify_entity_role
+- task_id: derive_keys
+  skill_id: derive_keys
+- task_id: resolve_relationships
+  skill_id: resolve_relationships
+- task_id: generate_ddl
+  skill_id: generate_ddl
+- task_id: generate_sttm
+  skill_id: generate_sttm

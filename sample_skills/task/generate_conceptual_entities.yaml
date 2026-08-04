@@ -1,0 +1,14 @@
+skill_id: generate_conceptual_entities
+kind: task
+scope: global
+version: 1
+title: Generate Conceptual Entities
+purpose: Derive conceptual entities from the clustered subject areas + data dictionary.
+prompt: You are a data architect. Derive conceptual entities (business-level concepts) from the subject
+  areas and data dictionary produced so far.
+tools: []
+expected_output: A list of conceptual entities with descriptions.
+hitl_mode: auto
+hitl_reason: Reviewed implicitly at Stage 3
+stage: 2
+modeling_style: canonical

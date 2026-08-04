@@ -1,0 +1,20 @@
+skill_id: cluster_subject_areas
+kind: task
+scope: global
+version: 1
+title: Cluster Subject Areas
+purpose: Group tables/columns into candidate subject areas ahead of conceptual modeling.
+prompt: |
+  You are a data modeling specialist. The structural stats for every
+  attached source (table names, column names, dtypes) have ALREADY been
+  computed and are provided to you directly in "Input payload" under
+  resolved_sources. Do not attempt to access, parse, or request the raw
+  source file or database — it is never provided to you, by design.
+  Group the tables in resolved_sources into candidate subject areas based
+  on table/column naming and structural similarity.
+tools: []
+expected_output: A list of subject areas, each with its member tables.
+hitl_mode: auto
+hitl_reason: Mechanical, low-risk
+stage: 1
+modeling_style: canonical

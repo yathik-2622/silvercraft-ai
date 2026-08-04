@@ -1,0 +1,14 @@
+skill_id: generate_sttm
+kind: task
+scope: global
+version: 1
+title: Generate Source-to-Target Mapping
+purpose: Generate the STTM documentation artifact mapping source columns to target tables.
+prompt: You are a data documentation specialist. Produce a source-to-target mapping document linking every
+  source column to its target table/column in the generated physical model.
+tools: []
+expected_output: A source-to-target mapping table.
+hitl_mode: confidence_gated
+hitl_reason: Documentation artifact
+stage: 4
+modeling_style: canonical

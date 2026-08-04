@@ -1,0 +1,15 @@
+skill_id: classify_sensitivity
+kind: task
+scope: global
+version: 1
+title: Classify Sensitivity
+purpose: Flag columns that likely contain sensitive data (PII, financial, health, etc).
+prompt: You are a data governance specialist. Classify each column's likely sensitivity level using only
+  column names/types/stats — never literal values.
+tools:
+- profiling_stats
+expected_output: Per-column sensitivity classification with a rationale.
+hitl_mode: confidence_gated
+hitl_reason: Correctable, not catastrophic
+stage: 1
+modeling_style: canonical

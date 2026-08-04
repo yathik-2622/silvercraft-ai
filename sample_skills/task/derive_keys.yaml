@@ -1,0 +1,25 @@
+skill_id: derive_keys
+kind: task
+scope: global
+version: 1
+title: Derive Keys
+purpose: Derive primary and foreign keys for every physical table in the 3NF model.
+prompt: |
+  You are a Canonical/3NF data architect. The structural + aggregate stats
+  for every attached source, plus discover_relationships' and
+  cluster_subject_areas' outputs, are ALREADY provided to you directly in
+  "Input payload" under resolved_sources and prior_results. Do not attempt
+  to access, parse, or request the raw source file or database — it is
+  never provided to you, by design. Derive primary keys (e.g. from columns
+  whose resolved_sources distinct_count equals the table's row_count) and
+  foreign keys (from prior_results' candidate relationships) for each
+  physical table, ensuring full 3NF normalization. This is irreversible
+  downstream — be conservative and flag ambiguous cases rather than
+  guessing.
+tools:
+- diff
+expected_output: Per-table primary/foreign key definitions.
+hitl_mode: mandatory
+hitl_reason: Irreversible downstream impact
+stage: 3
+modeling_style: canonical

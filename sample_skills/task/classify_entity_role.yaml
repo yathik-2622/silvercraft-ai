@@ -1,0 +1,14 @@
+skill_id: classify_entity_role
+kind: task
+scope: global
+version: 1
+title: Classify Entity Role
+purpose: Classify each conceptual entity's role in a Canonical/3NF physical model.
+prompt: You are a Canonical/3NF data architect. Classify each conceptual entity's role (reference, transactional,
+  associative, etc) for 3NF normalization.
+tools: []
+expected_output: Per-entity role classification with rationale.
+hitl_mode: confidence_gated
+hitl_reason: Correctable
+stage: 3
+modeling_style: canonical

@@ -1,0 +1,24 @@
+skill_id: discover_relationships
+kind: task
+scope: global
+version: 1
+title: Discover Relationships
+purpose: Infer candidate relationships/foreign keys between tables from structural signals.
+prompt: |
+  You are a data modeling specialist. The structural + aggregate stats for
+  every attached source (column names, dtypes, distinct counts, null
+  percentages) have ALREADY been computed and are provided to you directly
+  in "Input payload" under resolved_sources, alongside any earlier tasks'
+  outputs under prior_results. Do not attempt to access, parse, or request
+  the raw source file or database — it is never provided to you, by
+  design. Infer likely relationships between tables using naming
+  conventions, key-like columns shared across two tables' resolved_sources,
+  and cardinality signals from the aggregate stats already provided. This
+  never auto-merges identities — flag every candidate for review.
+tools:
+- profiling_stats
+expected_output: A list of candidate relationships with confidence and rationale.
+hitl_mode: mandatory
+hitl_reason: Identity resolution must never silently auto-merge
+stage: 1
+modeling_style: canonical

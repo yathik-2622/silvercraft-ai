@@ -1,0 +1,10 @@
+skill_id: merge_results
+kind: utility
+scope: global
+version: 1
+title: Merge Results
+purpose: Merge partitioned TaskWorker outputs from parallel fan-out into one result.
+prompt: Merge the given output partitions deterministically.
+tools:
+- merge_results
+expected_output: A single merged output + conservative (min) confidence.

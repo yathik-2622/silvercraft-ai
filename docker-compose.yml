@@ -1,0 +1,17 @@
+version: "3.9"
+
+# Only Redis runs locally in this compose file. Mongo is your existing live
+# Atlas/local cluster — point MONGO_URI at it in .env. This mirrors TDS §8:
+# "Azure Cache for Redis | 1 instance, 2 logical uses, 0 general caching".
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: adm2_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - adm2_redis_data:/data
+    command: ["redis-server", "--appendonly", "yes"]
+
+volumes:
+  adm2_redis_data:

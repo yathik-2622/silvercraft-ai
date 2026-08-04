@@ -1,0 +1,14 @@
+skill_id: resolve_relationships
+kind: task
+scope: global
+version: 1
+title: Resolve Relationships
+purpose: Resolve conceptual relationships into physical FK constraints once keys are set.
+prompt: You are a Canonical/3NF data architect. Once keys are derived, resolve every conceptual relationship
+  into a concrete physical foreign-key constraint.
+tools: []
+expected_output: Physical relationship/constraint definitions per table.
+hitl_mode: auto
+hitl_reason: Mechanical once keys are set
+stage: 3
+modeling_style: canonical

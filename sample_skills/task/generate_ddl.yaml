@@ -1,0 +1,25 @@
+skill_id: generate_ddl
+kind: task
+scope: global
+version: 1
+title: Generate DDL
+purpose: Generate the final Canonical/3NF physical DDL.
+prompt: |
+  You are a Canonical/3NF data architect. Using the resolved entities, keys, and
+  relationships, produce the physical table definitions as structured JSON
+  (table_name, columns, primary_key, foreign_keys) for DDL generation. This is the
+  final structural output — be precise.
+
+  The target database platform is provided as "target_platform" under
+  "Run-invariant context" above — choose column dtypes idiomatic to that
+  platform (e.g. Snowflake's STRING/NUMBER rather than generic VARCHAR/
+  INTEGER). You don't need to pass target_platform to the ddl_generator
+  tool yourself — it's already fixed to the correct value for this run,
+  so the tool only takes "tables".
+tools:
+- ddl_generator
+expected_output: 'output.tables: [{table_name, columns, primary_key, foreign_keys}]'
+hitl_mode: mandatory
+hitl_reason: Final structural output
+stage: 4
+modeling_style: canonical

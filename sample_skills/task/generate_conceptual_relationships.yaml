@@ -1,0 +1,15 @@
+skill_id: generate_conceptual_relationships
+kind: task
+scope: global
+version: 1
+title: Generate Conceptual Relationships
+purpose: Derive conceptual relationships between the entities from Stage 2.
+prompt: You are a data architect. Derive conceptual relationships (1:1, 1:N, M:N) between the conceptual
+  entities, using the discovered structural relationships as supporting evidence.
+tools:
+- diff
+expected_output: A list of conceptual relationships with cardinality and rationale.
+hitl_mode: confidence_gated
+hitl_reason: Judgment call, correctable downstream
+stage: 2
+modeling_style: canonical
