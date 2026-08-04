@@ -8,7 +8,7 @@ import httpProxy from "http-proxy";
 dotenv.config({ path: ".env.local" });
 
 const app = express();
-const PORT = 3002;
+const PORT = 3001;
 const FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8080";
 
 app.use(express.json({ limit: "10mb" }));

@@ -40,7 +40,9 @@ export const StudioPage: React.FC = () => {
   const [expanded, setExpanded] = useState<string[]>([]); 
   const [skillOpen, setSkillOpen] = useState(false); 
   const [activeSkill, setActiveSkill] = useState<Skill | null>(null);
+  const [pendingFiles, setPendingFiles] = useState<{ id: string; name: string; file: File }[]>([]);
   const [attachments, setAttachments] = useState<{ id: string; name: string }[]>([]); 
+  const [uploadedFiles, setUploadedFiles] = useState<{ id: string; name: string; contentType: string; size: number }[]>([]);
   const [canvasOpen, setCanvasOpen] = useState(true);
   const [canvasWidth, setCanvasWidth] = useState(520);
   const [error, setError] = useState(''); 
@@ -168,6 +170,11 @@ export const StudioPage: React.FC = () => {
     setActiveSkill(null);
 
     try { 
+      if (pendingFiles.length > 0) {
+        setActivity((items) => [...items, 'Uploading files...']);
+        await uploadPendingFiles();
+        setActivity((items) => items.filter((item) => !item.startsWith('Uploading')));
+      }
       await persist(chatId, 'user', textToSend, stage); 
       if (textToSend === '/' || textToSend.startsWith('/skill')) { 
         const preview = skills.map((skill) => `/${skill.name} \u2014 ${skill.description}\n${skill.content}`).join('\n\n'); 
@@ -236,7 +243,9 @@ export const StudioPage: React.FC = () => {
         setChats((items) => items.map((chat) => chat.id === chatId ? { ...chat, title: result.chat_title } : chat));
       }
     } catch (e: any) { 
-      setMessages((items) => [...items, { id: `error-${Date.now()}`, sender: 'system', text: e.response?.data?.detail || 'The orchestration request failed.' }]); 
+      const detail = e.response?.data?.detail || e.message || 'The orchestration request failed.';
+      setMessages((items) => [...items, { id: `error-${Date.now()}`, sender: 'system', text: `Error: ${detail}` }]); 
+      setActivity((items) => [...items, `Error: ${detail}`]);
     } finally { 
       setBusy(false); 
       setActivity([]);
@@ -269,31 +278,32 @@ export const StudioPage: React.FC = () => {
     await refreshChats();
     setChatToDelete(null);
   };
-  const upload = async (files: FileList | null) => { 
-    if (!files?.length) return; 
-    try { 
-      const response = await projectsApi.uploadFiles(projectId, 'chat_source', Array.from(files)); 
+  const uploadPendingFiles = async () => {
+    if (pendingFiles.length === 0) return [];
+    try {
+      const response = await projectsApi.uploadFiles(projectId, 'chat_source', pendingFiles.map((item) => item.file));
       const uploaded = response.data.map((file: any) => ({ id: file.id, name: file.filename, contentType: file.content_type, size: file.size }));
-      
-      // Phase 7: Poll until parsing is complete
       for (const file of uploaded) {
         setActivity((items) => [...items, `Parsing ${file.name}...`]);
         let status = 'processing';
         while (status === 'processing' || status === 'pending') {
-          await new Promise((resolve) => setTimeout(resolve, 2000));
+          await new Promise((resolve) => setTimeout(resolve, 500));
           const res = await projectsApi.getFileStatus(projectId, file.id);
           status = res.data.parse_status;
           if (status === 'failed') throw new Error(`Parsing failed for ${file.name}`);
         }
       }
-
       await Promise.all(uploaded.map((file: any) => sessionsApi.attachFile(chatId, file.id, file.name, file.contentType, file.size)));
-      setAttachments((items) => [...items, ...uploaded.map((file: any) => ({ id: file.id, name: file.name }))]); 
+      setUploadedFiles((items) => [...items, ...uploaded]);
+      setAttachments((items) => [...items, ...uploaded.map((file: any) => ({ id: file.id, name: file.name }))]);
+      setPendingFiles([]);
+      setActivity((items) => items.filter((item) => !item.startsWith('Parsing')));
+      return uploaded;
+    } catch (e: any) {
+      setError(e.message || 'File upload failed.');
       setActivity([]);
-    } catch (e: any) { 
-      setError(e.message || 'File upload failed.'); 
-      setActivity([]);
-    } 
+      throw e;
+    }
   };
   const saveConnection = async (event: React.FormEvent) => { 
     event.preventDefault(); 
@@ -657,13 +667,29 @@ export const StudioPage: React.FC = () => {
                     <span key={file.id} className="inline-flex items-center gap-1.5 rounded-full border border-[#e67225]/30 bg-[#e67225]/10 px-3 py-1.5 text-[11px] font-medium text-[#e67225]">
                       <FileText className="h-3.5 w-3.5" />
                       {file.name}
-                      <button onClick={() => setAttachments((items) => items.filter((item) => item.id !== file.id))} className="ml-1 text-[#e67225] hover:text-slate-900"><X className="h-3.5 w-3.5" /></button>
+                      <button onClick={() => { setAttachments((items) => items.filter((item) => item.id !== file.id)); setPendingFiles((p) => p.filter((pf) => pf.id !== file.id)); setUploadedFiles((u) => u.filter((uf) => uf.id !== file.id)); }} className="ml-1 text-[#e67225] hover:text-slate-900"><X className="h-3.5 w-3.5" /></button>
                     </span>
                   ))}
                 </div>
               )}
               <div className="relative px-4 pb-2.5 pt-2">
-                <input ref={uploadRef} type="file" multiple className="hidden" onChange={(e) => void upload(e.target.files)} />
+                <input ref={uploadRef} type="file" multiple className="hidden" onChange={(e) => {
+                  if (e.target.files) {
+                    const ALLOWED_EXTENSIONS = new Set(['.csv', '.json', '.pdf', '.docx', '.doc', '.txt', '.md', '.py', '.xlsx', '.xls', '.tsv']);
+                    const ALLOWED_TYPES = ['text/csv', 'application/json', 'application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/msword', 'text/plain', 'application/octet-stream', 'text/markdown', 'text/x-python', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/vnd.ms-excel'];
+                    const validFiles = Array.from(e.target.files).filter((file) => {
+                      const ext = '.' + file.name.split('.').pop()?.toLowerCase();
+                      return ALLOWED_EXTENSIONS.has(ext) || ALLOWED_TYPES.includes(file.type);
+                    });
+                    if (validFiles.length === 0) {
+                      setError('No supported files selected. Please upload CSV, JSON, PDF, DOCX, TXT, MD, or Python files.');
+                      return;
+                    }
+                    const newPending = validFiles.map((file) => ({ id: `pending-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`, name: file.name, file }));
+                    setPendingFiles((items) => [...items, ...newPending]);
+                    setAttachments((items) => [...items, ...newPending.map((item) => ({ id: item.id, name: item.name }))]);
+                  }
+                }} />
                 {skillOpen && (
                   <div className="absolute bottom-[calc(100%+8px)] left-5 right-5 z-20 max-h-60 overflow-auto rounded-3xl border border-slate-200 bg-white p-2 shadow-2xl backdrop-blur-xl">
                     {skills.filter((skill) => `/${skill.name}`.toLowerCase().includes(prompt.toLowerCase())).map((skill) => (
@@ -703,6 +729,7 @@ export const StudioPage: React.FC = () => {
                 </div>
                 <div className="flex items-center justify-between gap-3 border-t border-slate-200 pt-2 mt-1">
                   <div className="text-[11px] font-medium text-slate-500">
+                    {pendingFiles.length > 0 && `${pendingFiles.length} file(s) pending upload`}
                     {attachments.length ? `${attachments.length} file(s) attached to this chat` : 'General replies stay in chat. Delegated artifacts open the canvas.'}
                   </div>
                   <button onClick={() => void sendPrompt()} disabled={busy || !prompt.trim()} className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[#e67225] px-3 text-xs font-bold text-white shadow-sm transition duration-300 hover:scale-105 hover:bg-[#cf5e19] disabled:opacity-50 disabled:hover:scale-100">
