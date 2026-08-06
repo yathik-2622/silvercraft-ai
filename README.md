@@ -55,13 +55,13 @@ ADM_2.O/
 │   │   ├── mongo_client.py
 │   │   ├── collections.py            ★ kb_documents added
 │   │   └── vector_search.py          ★ chunk-level modeling_reference + skill-level semantic search
-│   ├── models/schemas.py             ★ ADM_KbDocument, ADM_Citation, ADM_Skill.embedding, User.is_admin
+│   ├── models/schemas.py             ★ ADM_KbDocument, ADM_Citation, ADM_Skill.embedding
 │   ├── llm/{client.py, embeddings.py}
 │   ├── core/
 │   │   ├── hitl.py
 │   │   ├── redis_pubsub.py
 │   │   ├── privacy.py
-│   │   ├── auth.py                   ★ ADM_require_admin added
+│   │   ├── auth.py                   ★ ADM_require_admin — checks ADMIN_USERNAMES, not a Mongo field
 │   │   ├── ownership.py
 │   │   ├── reasoning_stream.py       ★ ADM_stream_citations, kb_ingest source
 │   │   └── chunking.py               ★ NEW — 4 named strategies, offset-tracked
@@ -85,7 +85,6 @@ ADM_2.O/
 │       ├── routes_admin.py           ★ NEW — unified KB/skill ingestion, admin-only
 │       └── routes_kb.py              ★ NEW — GET /kb/documents/{id}, any authenticated user
 ├── scripts/
-│   ├── promote_admin.py              ★ NEW — one-off, NOT a seed script (see docstring)
 │   └── run_local.sh
 └── tests/test_health.py
 ```
@@ -194,19 +193,25 @@ Docker path just did.
    relying on real search performance.
 5. `uvicorn app.main:app --reload --port 8000` (terminal 1), `celery -A
    app.celery_app.celery_app worker --loglevel=info -P solo` (terminal 2).
-6. Register + promote your first admin user (below), then work through
+6. Register + grant yourself admin (below), then work through
    `SETUP_AND_TESTING.md` end to end — it's the detailed, numbered
    walkthrough this summary points at.
 
 ### First admin user
 
+Admin is a deployment-level trust list, not a stored user field — there is
+no promotion script or API call:
+
 ```bash
 # 1. Register a normal user via POST /auth/register (or /docs)
-# 2. Promote them:
-python scripts/promote_admin.py <username>
-# 3. Log in again (is_admin is checked live per-request against the DB,
-#    never cached in the JWT — see app/core/auth.py:ADM_require_admin)
+# 2. Add its username to .env:
+ADMIN_USERNAMES=<username>
+# 3. Restart uvicorn, then log in again — is_admin is computed live on
+#    every request from ADMIN_USERNAMES (see app/core/auth.py:ADM_is_admin_username),
+#    never cached in the JWT or stored in Mongo.
 ```
+
+`ADMIN_USERNAMES` accepts a comma-separated list for more than one admin.
 
 ---
 

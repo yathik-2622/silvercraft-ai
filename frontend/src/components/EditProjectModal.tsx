@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { Pencil, X } from "lucide-react";
+import React, { useRef, useState } from "react";
+import { FileText, Pencil, X } from "lucide-react";
 import { projectsApi } from "../api/client";
 import type { Project, TargetPlatform } from "../types";
 
@@ -15,10 +15,14 @@ const TARGET_PLATFORM_OPTIONS: { value: TargetPlatform; label: string }[] = [
   { value: "sqlserver", label: "SQL Server" },
 ];
 
+const BUSINESS_STANDARDS_EXTENSIONS = ".md,.txt,.pdf,.docx,.pptx";
+
 export const EditProjectModal: React.FC<Props> = ({ project, onClose, onSaved }) => {
   const [name, setName] = useState(project.name);
   const [domain, setDomain] = useState(project.domain);
   const [targetPlatform, setTargetPlatform] = useState<TargetPlatform>(project.target_platform || "postgresql");
+  const [bsFile, setBsFile] = useState<File | null>(null);
+  const bsFileInputRef = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -36,6 +40,16 @@ export const EditProjectModal: React.FC<Props> = ({ project, onClose, onSaved })
         domain: domain.trim(),
         target_platform: targetPlatform,
       });
+      if (bsFile) {
+        try {
+          await projectsApi.uploadBusinessStandards(project.project_id, bsFile);
+        } catch (err) {
+          setError(err instanceof Error ? `Project saved, but business standards upload failed: ${err.message}` : "Project saved, but business standards upload failed.");
+          setIsSubmitting(false);
+          onSaved();
+          return;
+        }
+      }
       onSaved();
       onClose();
     } catch (err) {
@@ -90,6 +104,42 @@ export const EditProjectModal: React.FC<Props> = ({ project, onClose, onSaved })
               ))}
             </select>
             <p className="text-[10px] text-slate-400 mt-1">Determines the SQL dialect used for generated DDL.</p>
+          </div>
+
+          <div>
+            <label className="text-[11px] font-bold text-slate-700 block mb-1">
+              {project.has_business_standards ? "Replace Business Standards" : "Add Business Standards"} (optional)
+            </label>
+            {bsFile ? (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200 font-bold text-[11px]">
+                <FileText className="w-3 h-3" />
+                {bsFile.name}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBsFile(null);
+                    if (bsFileInputRef.current) bsFileInputRef.current.value = "";
+                  }}
+                  className="hover:bg-emerald-200 rounded p-0.5 cursor-pointer"
+                  title="Remove"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </span>
+            ) : (
+              <input
+                ref={bsFileInputRef}
+                type="file"
+                accept={BUSINESS_STANDARDS_EXTENSIONS}
+                onChange={(e) => setBsFile(e.target.files?.[0] || null)}
+                className="w-full text-[11px] text-slate-600 file:mr-2 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:bg-brand-orange-light file:text-brand-orange file:font-bold file:cursor-pointer"
+              />
+            )}
+            <p className="text-[10px] text-slate-400 mt-1">
+              {project.has_business_standards
+                ? "Uploading a file here replaces the current standards document."
+                : "To edit existing standards text directly, use the chip on the project card instead."}
+            </p>
           </div>
 
           {error && (

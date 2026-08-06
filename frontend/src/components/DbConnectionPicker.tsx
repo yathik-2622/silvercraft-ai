@@ -9,7 +9,7 @@ interface Props {
   onSelect: (id: string | null) => void;
 }
 
-const DIALECT_OPTIONS = ["postgresql", "mysql", "sqlite", "mssql", "oracle"];
+export const DIALECT_OPTIONS = ["postgresql", "mysql", "sqlite", "mssql", "oracle"];
 
 export const DbConnectionPicker: React.FC<Props> = ({ projectId, selectedId, onSelect }) => {
   const [connections, setConnections] = useState<DbConnection[]>([]);

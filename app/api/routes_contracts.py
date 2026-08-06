@@ -196,9 +196,18 @@ async def ADM_add_plan_comment(
     is a normal thing to want, e.g. explaining an edit) — this is
     deliberately not blocked by `immutable`, unlike PATCH /contracts/{id}'s
     stage edits, which are.
+
+    Task-scoped comments (body.task_id set) are the one exception: they are
+    real execution instructions injected into that task's own input_payload
+    (see ADM_execute_one_task), so once the contract is no longer "draft"
+    the task may have already run (or be running) with the instructions it
+    had at approval time — accepting a new one after the fact would silently
+    do nothing, which is worse than telling the user it's too late.
     """
-    await ADM__get_owned_contract(contract_id, current_user_id)
-    comment = ADM_PlanComment(author_user_id=current_user_id, text=body.text)
+    contract = await ADM__get_owned_contract(contract_id, current_user_id)
+    if body.task_id and contract.get("status") != "draft":
+        raise HTTPException(400, "Can't add a task-scoped instruction after the plan has been approved.")
+    comment = ADM_PlanComment(author_user_id=current_user_id, text=body.text, task_id=body.task_id)
     db = ADM_get_db()
     await db[ADM_COLLECTION_EXECUTION_CONTRACTS].update_one(
         {"contract_id": contract_id}, {"$push": {"comments": comment.model_dump()}}

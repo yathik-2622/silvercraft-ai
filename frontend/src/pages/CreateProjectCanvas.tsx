@@ -1,8 +1,11 @@
-import React, { useState } from "react";
-import { ArrowLeft, Plus, Rocket, User, X } from "lucide-react";
-import { collaboratorsApi, projectsApi } from "../api/client";
+import React, { useRef, useState } from "react";
+import { ArrowLeft, Database, FileText, Plus, Rocket, User, X } from "lucide-react";
+import { collaboratorsApi, dbConnectionsApi, projectsApi } from "../api/client";
+import { DIALECT_OPTIONS } from "../components/DbConnectionPicker";
 import type { Project, ProjectLayer, TargetPlatform } from "../types";
 import { useAuth } from "../auth/AuthContext";
+
+const BUSINESS_STANDARDS_EXTENSIONS = ".md,.txt,.pdf,.docx,.pptx";
 
 interface Props {
   onCancel: () => void;
@@ -29,6 +32,11 @@ export const CreateProjectCanvas: React.FC<Props> = ({ onCancel, onCreated }) =>
   const [targetPlatform, setTargetPlatform] = useState<TargetPlatform>("postgresql");
   const [memberUsername, setMemberUsername] = useState("");
   const [pendingMembers, setPendingMembers] = useState<string[]>([]);
+  const [bsFile, setBsFile] = useState<File | null>(null);
+  const bsFileInputRef = useRef<HTMLInputElement>(null);
+  const [wantsDbConnection, setWantsDbConnection] = useState(false);
+  const [dbDialect, setDbDialect] = useState(DIALECT_OPTIONS[0]);
+  const [dbDsnRef, setDbDsnRef] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -55,6 +63,7 @@ export const CreateProjectCanvas: React.FC<Props> = ({ onCancel, onCreated }) =>
       // PATCH endpoint right after create, same as editing it later.
       project = await projectsApi.patch(project.project_id, { target_platform: targetPlatform });
 
+      const warnings: string[] = [];
       const failedMembers: string[] = [];
       for (const username of pendingMembers) {
         try {
@@ -64,7 +73,26 @@ export const CreateProjectCanvas: React.FC<Props> = ({ onCancel, onCreated }) =>
         }
       }
       if (failedMembers.length > 0) {
-        setWarning(`Project created, but couldn't add: ${failedMembers.join(", ")} (check the username exists).`);
+        warnings.push(`couldn't add: ${failedMembers.join(", ")} (check the username exists)`);
+      }
+
+      if (bsFile) {
+        try {
+          await projectsApi.uploadBusinessStandards(project.project_id, bsFile);
+          project = { ...project, has_business_standards: true };
+        } catch {
+          warnings.push("business standards upload failed — you can retry from the project card");
+        }
+      }
+      if (wantsDbConnection && dbDsnRef.trim()) {
+        try {
+          await dbConnectionsApi.create(project.project_id, dbDialect, dbDsnRef.trim());
+        } catch {
+          warnings.push("database connection failed to save — you can add it later");
+        }
+      }
+      if (warnings.length > 0) {
+        setWarning(`Project created, but ${warnings.join("; ")}.`);
       }
       onCreated(project);
     } catch (err) {
@@ -148,6 +176,91 @@ export const CreateProjectCanvas: React.FC<Props> = ({ onCancel, onCreated }) =>
               ))}
             </select>
             <p className="text-[10px] text-slate-500 mt-1">Determines the SQL dialect used for generated DDL at Stage 4.</p>
+          </div>
+
+          <div>
+            <label className="text-[11px] font-bold text-slate-700 block mb-1">Business Standards (optional)</label>
+            <p className="text-[10px] text-slate-500 mb-1.5">
+              Project-scoped rules/standards text, stored whole as run-invariant context for every modeling run in
+              this project. You can add or edit this later from the project card.
+            </p>
+            {bsFile ? (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200 font-bold text-[11px]">
+                <FileText className="w-3 h-3" />
+                {bsFile.name}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBsFile(null);
+                    if (bsFileInputRef.current) bsFileInputRef.current.value = "";
+                  }}
+                  className="hover:bg-emerald-200 rounded p-0.5 cursor-pointer"
+                  title="Remove"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </span>
+            ) : (
+              <input
+                ref={bsFileInputRef}
+                type="file"
+                accept={BUSINESS_STANDARDS_EXTENSIONS}
+                onChange={(e) => setBsFile(e.target.files?.[0] || null)}
+                className="w-full text-[11px] text-slate-600 file:mr-2 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:bg-brand-orange-light file:text-brand-orange file:font-bold file:cursor-pointer"
+              />
+            )}
+          </div>
+
+          <div>
+            <label className="text-[11px] font-bold text-slate-700 block mb-1">Database Connection (optional)</label>
+            <p className="text-[10px] text-slate-500 mb-1.5">
+              Lets modeling runs in this project pull live source schema. Only one connection per project — this is
+              now the only place to set it up; it can no longer be changed from inside a chat.
+            </p>
+            {!wantsDbConnection ? (
+              <button
+                type="button"
+                onClick={() => setWantsDbConnection(true)}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-50 border border-slate-200 hover:border-slate-300 text-slate-600 font-bold text-[11px] cursor-pointer"
+              >
+                <Database className="w-3 h-3" /> Add a database connection
+              </button>
+            ) : (
+              <div className="space-y-1.5 p-3 rounded-xl bg-slate-50 border border-slate-200">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Connection details</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setWantsDbConnection(false);
+                      setDbDsnRef("");
+                    }}
+                    className="text-slate-400 hover:text-rose-600 cursor-pointer"
+                    title="Remove"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                <select
+                  value={dbDialect}
+                  onChange={(e) => setDbDialect(e.target.value)}
+                  className="w-full px-2.5 py-2 bg-white border border-slate-200 rounded-lg text-xs font-semibold text-slate-800 cursor-pointer"
+                >
+                  {DIALECT_OPTIONS.map((d) => (
+                    <option key={d} value={d}>
+                      {d}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  type="text"
+                  value={dbDsnRef}
+                  onChange={(e) => setDbDsnRef(e.target.value)}
+                  placeholder="Env var name holding the DSN"
+                  className="w-full px-2.5 py-2 bg-white border border-slate-200 rounded-lg text-xs font-semibold text-slate-800"
+                />
+              </div>
+            )}
           </div>
         </div>
 

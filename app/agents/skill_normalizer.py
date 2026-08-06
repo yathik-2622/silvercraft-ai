@@ -1,18 +1,39 @@
 """
-Skill Normalizer — TDS §5 rows 10-12, §6. Constrained-extraction adapter,
+Skill Normalizer — TDS §5 rows 10-12, §6. Constrained-drafting adapter,
 runs as one Celery task. Maps a user-uploaded, free-form skill description
-into the exact Task/Workflow Skill schema, without paraphrasing or
-inventing content.
+into a complete Task/Workflow/Utility Skill definition — see
+app/tools/skill_normalizer_extract.py's module docstring for the Phase 6
+policy change (draft everything except skill_id/title, never leave the
+rest blank for the user to fill in).
 
 Streams its extraction reasoning live (chat_id optional — normalize_skill_task
 always has one when triggered from a chat-attached upload; scripts/tests
 that call this directly simply omit it).
 """
+import logging
+
 from app.core.reasoning_stream import ADM_SOURCE_SKILL_NORMALIZER, ADM_stream_agent_call, ADM_stream_log
 from app.db.mongo_client import ADM_get_db
 from app.db.collections import ADM_COLLECTION_SKILL_DRAFTS, ADM_COLLECTION_SKILLS
 from app.models.schemas import ADM_SkillDraft, ADM_Skill, ADM_now
 from app.tools.skill_normalizer_extract import ADM_extract_skill_from_text
+
+logger = logging.getLogger(__name__)
+
+
+async def ADM_load_task_skill_catalog() -> list[dict]:
+    """Reference context for workflow task_list drafting (see
+    skill_normalizer_extract.py) — every global, kind=task skill's
+    skill_id/title/purpose, so the LLM can match a described step to a
+    real skill instead of inventing a duplicate. Kept to the LATEST
+    version per skill_id (a workflow shouldn't reference a stale one)."""
+    from app.db.vector_search import ADM__dedupe_latest_skill_version
+
+    db = ADM_get_db()
+    docs = await db[ADM_COLLECTION_SKILLS].find(
+        {"kind": "task", "scope": "global"}, {"_id": 0, "skill_id": 1, "title": 1, "purpose": 1, "version": 1}
+    ).to_list(length=200)
+    return ADM__dedupe_latest_skill_version(docs)
 
 
 async def ADM_normalize_skill(
@@ -38,9 +59,11 @@ async def ADM_normalize_skill(
     out which draft its upload produced.
     """
     if chat_id:
-        await ADM_stream_log(chat_id, ADM_SOURCE_SKILL_NORMALIZER, "Constrained-extraction: mapping uploaded skill text into the Skill schema (never inventing missing fields)...")
+        await ADM_stream_log(chat_id, ADM_SOURCE_SKILL_NORMALIZER, "Drafting a complete skill definition from the uploaded text (only skill ID/title will ever be asked of you)...")
 
-    extraction = await ADM_extract_skill_from_text(raw_text)
+    task_catalog = await ADM_load_task_skill_catalog()
+    logger.info("ADM_normalize_skill: project_id=%s target_scope=%s task_catalog_size=%d", project_id, target_scope, len(task_catalog))
+    extraction = await ADM_extract_skill_from_text(raw_text, task_catalog=task_catalog)
     draft_kwargs = {
         "project_id": project_id,
         "extracted": extraction["extracted"],
@@ -102,36 +125,42 @@ async def ADM_approve_skill_draft(draft_id: str, current_user_id: str | None = N
 
     target_scope = draft_doc.get("target_scope", "user")
     fields = draft_doc["extracted"]
+    # skill_id/title are guaranteed present — that's exactly what the
+    # missing_fields check above gates on. Everything else is now always
+    # DRAFTED by the extractor (see skill_normalizer_extract.py's Phase 6
+    # policy change), never required to be present — .get() with a safe
+    # default rather than a raw KeyError, in case an older draft (created
+    # before this change) or a malformed LLM response is missing one.
     skill = ADM_Skill(
         skill_id=fields["skill_id"],
-        kind=fields["kind"],
+        kind=fields.get("kind", "task"),
         scope=target_scope,
         title=fields["title"],
-        purpose=fields["purpose"],
-        prompt=fields["prompt"],
+        purpose=fields.get("purpose", ""),
+        prompt=fields.get("prompt", ""),
         tools=fields.get("tools", []),
         expected_output=fields.get("expected_output", ""),
         stage=fields.get("stage"),
         modeling_style=fields.get("modeling_style", "canonical"),
+        # Only meaningful for kind="workflow" — drafted by the extractor
+        # from a multi-step source description, editable by the user in
+        # the CreateSkillModal preview before this approve call runs.
+        task_list=fields.get("task_list", []) if fields.get("kind") == "workflow" else [],
         created_by_user_id=current_user_id if target_scope != "global" else None,
     )
-    # scope AND version are both part of the filter — skill_id+scope alone
-    # isn't unique across versions, and skill_id+version alone isn't unique
-    # across scopes (the same skill_id legitimately exists at both
-    # scope=global and scope=user, see ADM_resolve_workflow_skill's
-    # scope-priority lookup). Same filter shape as the direct-YAML upload
-    # paths in routes_admin.py/routes_skills.py and
-    # vector_search.ADM_embed_and_store_skill.
-    await db[ADM_COLLECTION_SKILLS].update_one(
-        {"skill_id": skill.skill_id, "scope": target_scope, "version": skill.version},
-        {"$set": skill.model_dump()},
-        upsert=True,
-    )
+    # Server-computed, not the schema default (version=1) — see
+    # ADM_next_skill_version's docstring. Approving a draft for a skill_id
+    # that already exists at this scope (e.g. re-creating "Flag PII
+    # Columns" mid-chat a second time) now lands as its own new version
+    # document instead of silently overwriting the first one.
+    from app.db.vector_search import ADM_embed_and_store_skill, ADM_next_skill_version
+    skill.version = await ADM_next_skill_version(skill.skill_id, target_scope)
+
+    await db[ADM_COLLECTION_SKILLS].insert_one(skill.model_dump())
     await db[ADM_COLLECTION_SKILL_DRAFTS].update_one(
         {"draft_id": draft_id}, {"$set": {"status": "approved"}}
     )
 
-    from app.db.vector_search import ADM_embed_and_store_skill
     await ADM_embed_and_store_skill(skill.skill_id, skill.version, skill.scope)
 
     return skill

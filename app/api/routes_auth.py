@@ -10,6 +10,7 @@ from app.core.auth import (
     ADM_create_access_token,
     ADM_get_current_user_id,
     ADM_hash_password,
+    ADM_is_admin_username,
     ADM_verify_password,
 )
 from app.db.collections import ADM_COLLECTION_USERS
@@ -30,7 +31,7 @@ def ADM__to_public(user_doc: dict) -> ADM_UserPublic:
         user_id=user_doc["user_id"],
         username=user_doc["username"],
         email=user_doc.get("email"),
-        is_admin=user_doc.get("is_admin", False),
+        is_admin=ADM_is_admin_username(user_doc["username"]),
         created_at=user_doc["created_at"],
     )
 

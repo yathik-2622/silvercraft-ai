@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Cpu, KeyRound, Save, Sparkles } from "lucide-react";
 import { settingsApi } from "../api/client";
 import type { LlmProvider, ModelCatalog, UserSettings, UserSettingsUpdate } from "../types";
@@ -37,6 +37,14 @@ export const LlmRuntimeSettingsCard: React.FC = () => {
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedMessage, setSavedMessage] = useState<string | null>(null);
+  // Guards the mount-time GET below from clobbering a save that completes
+  // first — without this, a GET that happens to resolve after a fast Save
+  // (StrictMode's dev double-fire made this trivial to reproduce, but the
+  // same race is reachable in production any time the initial fetch is
+  // slower than the user) silently reverts the form to pre-save values
+  // right after "Settings saved." — confirmed live via a poll of the
+  // provider <select>'s value across the save.
+  const hasSavedRef = useRef(false);
 
   const loadCatalog = () => {
     setIsLoadingCatalog(true);
@@ -51,6 +59,7 @@ export const LlmRuntimeSettingsCard: React.FC = () => {
     settingsApi
       .get()
       .then((s) => {
+        if (hasSavedRef.current) return;
         setSettings(s);
         setForm((prev) => ({
           ...prev,
@@ -68,6 +77,7 @@ export const LlmRuntimeSettingsCard: React.FC = () => {
     setForm((prev) => ({ ...prev, [key]: value }));
 
   const handleSave = async () => {
+    hasSavedRef.current = true;
     setError(null);
     setSavedMessage(null);
     setIsSaving(true);

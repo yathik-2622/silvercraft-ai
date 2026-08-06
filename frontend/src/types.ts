@@ -18,6 +18,15 @@ export interface Project {
   target_platform: TargetPlatform | null;
   collaborator_user_ids: string[];
   created_at: string;
+  has_business_standards: boolean;
+}
+
+export interface BusinessStandardsDocument {
+  project_id: string;
+  source_filename: string;
+  full_text: string;
+  uploaded_by: string;
+  uploaded_at: string;
 }
 
 export interface Collaborator {
@@ -73,6 +82,17 @@ export interface CreateProjectPrompt {
   suggested_layer: ProjectLayer;
 }
 
+export interface ChatFileRef {
+  raw_file_id?: string;
+  db_connection_id?: string;
+  // Enriched server-side (app/api/routes_chats.py::ADM__enrich_file_refs_for_display)
+  // at message-send time — absent for a stale/deleted raw_file_id or a
+  // db_connection_id-only ref, in which case the card falls back to
+  // showing just the pointer.
+  original_filename?: string;
+  row_count?: number;
+}
+
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
@@ -82,6 +102,16 @@ export interface ChatMessage {
   skill_preview?: MatchedSkillPreview;
   missing_info?: string[];
   create_project_prompt?: CreateProjectPrompt | null;
+  follow_up_questions?: string[];
+  // Only present on user messages — the file(s)/db connection attached
+  // when this message was sent (Phase 4). Shown as a small card above
+  // the message text, matching how Claude/ChatGPT show an attachment.
+  file_refs?: ChatFileRef[];
+  // Client-only — a snapshot of this turn's reasoning events, taken the
+  // moment the response completes. Never sent to the backend, never
+  // persisted; lost on page refresh same as the old global reasoning panel
+  // already was.
+  _reasoningSnapshot?: ReasoningEvent[];
 }
 
 export interface Chat {
@@ -103,7 +133,8 @@ export type ReasoningEventType =
   | "tool_end"
   | "token"
   | "error"
-  | "citations";
+  | "citations"
+  | "artifact";
 
 export interface ReasoningEvent {
   type: ReasoningEventType;
@@ -120,6 +151,40 @@ export interface ReasoningEvent {
     citations?: unknown[];
     [key: string]: unknown;
   };
+}
+
+// A completed Stage 1-4 task's real structured output — carried separately
+// from the generic reasoning stream (never stringified) so the frontend can
+// route it straight to an artifact renderer. See app.core.reasoning_stream
+// .ADM_stream_artifact.
+export interface ArtifactEvent {
+  type: "artifact";
+  payload: {
+    source: string;
+    task_id: string;
+    skill_id: string;
+    stage: number;
+    label: string;
+    output: unknown;
+    confidence: number | null;
+    citations: Citation[];
+  };
+}
+
+export type ArtifactKind = "table" | "er-diagram" | "markdown" | "keyvalue";
+
+// One entry in the chat's artifact canvas — built client-side from an
+// ArtifactEvent the moment it arrives (see detectArtifactKind).
+export interface ChatArtifact {
+  artifact_id: string;
+  task_id: string;
+  skill_id: string;
+  stage: number;
+  label: string;
+  output: unknown;
+  confidence: number | null;
+  kind: ArtifactKind;
+  received_at: string;
 }
 
 export type ContractEventType =
@@ -152,6 +217,7 @@ export interface PlanComment {
   author_user_id: string;
   text: string;
   created_at: string;
+  task_id: string | null;
 }
 
 export type ContractStatus = "draft" | "approved" | "running" | "paused" | "completed" | "failed";
@@ -203,6 +269,12 @@ export interface RunState {
 export type SkillKind = "task" | "utility" | "workflow";
 export type SkillScope = "global" | "org" | "user";
 
+export interface SkillWorkflowTask {
+  task_id: string;
+  skill_id: string;
+  name?: string;
+}
+
 export interface Skill {
   skill_id: string;
   kind: SkillKind;
@@ -219,6 +291,7 @@ export interface Skill {
   modeling_style: string | null;
   created_by_user_id: string | null;
   created_at: string;
+  task_list?: SkillWorkflowTask[];
 }
 
 export interface SkillDraftExtracted {
@@ -233,6 +306,10 @@ export interface SkillDraftExtracted {
   modeling_style?: string;
   hitl_mode?: HitlMode;
   hitl_reason?: string;
+  // Only meaningful for kind="workflow" — drafted by the Skill Normalizer
+  // from a multi-step source description (app/tools/skill_normalizer_extract.py),
+  // editable here before Confirm & Create.
+  task_list?: SkillWorkflowTask[];
   [key: string]: unknown;
 }
 
@@ -241,7 +318,8 @@ export interface SkillDraft {
   project_id: string;
   extracted: SkillDraftExtracted;
   missing_fields: string[];
-  status: "pending" | "awaiting_clarification" | "approved";
+  status: "pending" | "awaiting_clarification" | "approved" | "failed";
+  error?: string | null;
   target_scope: SkillScope;
   created_at: string;
 }
@@ -267,6 +345,8 @@ export interface KbDocumentDetail {
   full_text: string;
   status: KbDocumentStatus;
   chunks: { chunk_id: string; chunk_index: number; char_start: number; char_end: number }[];
+  original_extension: string;
+  has_native_preview: boolean;
 }
 
 export interface AdminKbConfig {

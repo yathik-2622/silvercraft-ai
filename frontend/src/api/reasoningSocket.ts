@@ -1,5 +1,5 @@
 import { API_BASE_URL, getToken } from "./client";
-import type { ChatMessage, ContractEvent, ReasoningEvent } from "../types";
+import type { ArtifactEvent, ChatMessage, ContractEvent, ReasoningEvent } from "../types";
 
 const CONTRACT_EVENT_TYPES = new Set([
   "plan_ready",
@@ -20,6 +20,7 @@ export interface ReasoningSocketHandlers {
   onReasoningEvent: (event: ReasoningEvent) => void;
   onAssistantMessage: (message: ChatMessage) => void;
   onContractEvent?: (event: ContractEvent) => void;
+  onArtifact?: (event: ArtifactEvent) => void;
   onStatusChange: (status: "connecting" | "open" | "closed" | "unauthorized") => void;
 }
 
@@ -46,6 +47,10 @@ export function openReasoningSocket(chatId: string, handlers: ReasoningSocketHan
       }
       if (CONTRACT_EVENT_TYPES.has(parsed.type)) {
         handlers.onContractEvent?.(parsed as ContractEvent);
+        return;
+      }
+      if (parsed.type === "artifact") {
+        handlers.onArtifact?.(parsed as ArtifactEvent);
         return;
       }
       if (

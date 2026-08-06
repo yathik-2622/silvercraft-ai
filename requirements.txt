@@ -11,8 +11,10 @@ langgraph-checkpoint-mongodb
 langchain-core
 langchain-openai
 langchain-text-splitters
+langchain-community  # PyPDFLoader/CSVLoader for KB doc parsing — app/tools/document_text_extract.py
 openai
 polars
+fastexcel  # Calamine/Rust engine backing polars.read_excel — app/tools/upload_ingestion.py
 openpyxl
 python-multipart
 SQLAlchemy

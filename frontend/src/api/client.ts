@@ -1,5 +1,6 @@
 import type {
   AdminKbConfig,
+  BusinessStandardsDocument,
   Chat,
   Collaborator,
   DbConnection,
@@ -110,6 +111,21 @@ export const projectsApi = {
     }),
   remove: (projectId: string) =>
     request<void>(`/projects/${projectId}`, { method: "DELETE" }),
+  uploadBusinessStandards: (projectId: string, file: File) => {
+    const form = new FormData();
+    form.set("file", file);
+    return request<{ status: string; project_id: string; char_length: number }>(
+      `/projects/${projectId}/business-standards`,
+      { method: "PUT", body: form },
+    );
+  },
+  editBusinessStandards: (projectId: string, fullText: string) =>
+    request<{ status: string; project_id: string; char_length: number }>(
+      `/projects/${projectId}/business-standards`,
+      { method: "PATCH", body: JSON.stringify({ full_text: fullText }) },
+    ),
+  getBusinessStandards: (projectId: string) =>
+    request<BusinessStandardsDocument>(`/projects/${projectId}/business-standards`),
 };
 
 export interface FileRef {
@@ -163,10 +179,10 @@ export const contractsApi = {
     request<{ status: string; contract_id: string }>(`/contracts/${contractId}/approve`, { method: "POST" }),
   status: (contractId: string) =>
     request<{ contract: ExecutionContract; run_state: RunState | null }>(`/contracts/${contractId}/status`),
-  addComment: (contractId: string, text: string) =>
+  addComment: (contractId: string, text: string, taskId?: string) =>
     request<PlanComment>(`/contracts/${contractId}/comments`, {
       method: "POST",
-      body: JSON.stringify({ text }),
+      body: JSON.stringify(taskId ? { text, task_id: taskId } : { text }),
     }),
   provenance: (contractId: string) => request<ProvenanceReport>(`/contracts/${contractId}/provenance`),
   pushToGit: (contractId: string, repoPath: string, remoteUrl?: string, branch?: string) => {
@@ -276,6 +292,23 @@ export const skillDraftsApi = {
 
 export const kbApi = {
   getDocument: (docId: string) => request<KbDocumentDetail>(`/kb/documents/${docId}`),
+  getTablePreview: (docId: string) => request<{ columns: string[]; rows: Record<string, unknown>[] }>(`/kb/documents/${docId}/table-preview`),
+  // The /file route requires the same Bearer-token auth as everything
+  // else in this app — a plain <iframe src="..."> can't attach a custom
+  // Authorization header, so this fetches the bytes with the header
+  // (same pattern contractsApi.downloadArtifact already uses) and hands
+  // back a blob: URL the iframe CAN use directly. Caller owns revoking it
+  // (URL.revokeObjectURL) once done, same as any other object URL.
+  fetchFileBlobUrl: async (docId: string): Promise<{ url: string; mediaType: string }> => {
+    const token = getToken();
+    const res = await fetch(`${API_BASE_URL}/kb/documents/${docId}/file`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) throw new ApiError(res.status, res.statusText);
+    const mediaType = res.headers.get("Content-Type") || "application/octet-stream";
+    const blob = await res.blob();
+    return { url: URL.createObjectURL(blob), mediaType };
+  },
 };
 
 export const adminApi = {
@@ -285,36 +318,26 @@ export const adminApi = {
     `/admin/kb/documents/${docId}`,
     { method: "DELETE" },
   ),
-  uploadModeling: (file: File, title: string, chunkingStrategy: string) => {
+  uploadModeling: (files: File[], title: string, chunkingStrategy: string) => {
     const form = new FormData();
     form.set("kb_type", "modeling");
-    form.set("file", file);
-    form.set("title", title);
+    files.forEach((f) => form.append("files", f));
+    if (title) form.set("title", title);
     form.set("chunking_strategy", chunkingStrategy);
-    return request<{ doc_id: string; status: string; char_length: number; chunking_strategy: string }>(
+    return request<{ results: Array<{ filename: string; status: string; [key: string]: unknown }> }>(
       "/admin/kb/upload",
       { method: "POST", body: form },
     );
   },
-  uploadSkill: (file: File, projectId?: string) => {
+  uploadSkill: (files: File[], projectId?: string) => {
     const form = new FormData();
     form.set("kb_type", "skill");
-    form.set("file", file);
+    files.forEach((f) => form.append("files", f));
     if (projectId) form.set("project_id", projectId);
-    return request<
-      | { status: "uploaded"; path: "direct_yaml"; skill_id: string; kind: string; version: number; scope: string; note?: string }
-      | { status: "accepted"; path: "normalizer"; target_scope: string; draft_id: string; note?: string }
-    >("/admin/kb/upload", { method: "POST", body: form });
-  },
-  uploadBusinessStandards: (file: File, projectId: string) => {
-    const form = new FormData();
-    form.set("kb_type", "business_standards");
-    form.set("file", file);
-    form.set("project_id", projectId);
-    return request<{ status: string; project_id: string; char_length: number }>("/admin/kb/upload", {
-      method: "POST",
-      body: form,
-    });
+    return request<{ results: Array<{ filename: string; status: string; [key: string]: unknown }> }>(
+      "/admin/kb/upload",
+      { method: "POST", body: form },
+    );
   },
 };
 

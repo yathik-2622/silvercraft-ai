@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 import { useWorkspace } from "../workspace/WorkspaceContext";
+import { ConfirmModal } from "./ConfirmModal";
 
 interface Props {
   isCollapsed: boolean;
@@ -56,6 +57,7 @@ export const SidebarNavigator: React.FC<Props> = ({
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [editingChatId, setEditingChatId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
+  const [deletingChatId, setDeletingChatId] = useState<string | null>(null);
 
   const startRename = (chatId: string, currentTitle: string) => {
     setEditingChatId(chatId);
@@ -69,10 +71,9 @@ export const SidebarNavigator: React.FC<Props> = ({
     setEditingChatId(null);
   };
 
-  const handleDelete = (chatId: string) => {
-    if (window.confirm("Delete this chat? This can't be undone.")) {
-      deleteChat(chatId);
-    }
+  const confirmDelete = () => {
+    if (deletingChatId) deleteChat(deletingChatId);
+    setDeletingChatId(null);
   };
 
   return (
@@ -137,6 +138,22 @@ export const SidebarNavigator: React.FC<Props> = ({
             <MessageSquarePlus className="w-4 h-4 text-slate-500 shrink-0" />
             {!isCollapsed && <span>Quick Chat</span>}
           </button>
+
+          {user?.is_admin && (
+            <button
+              type="button"
+              onClick={onSelectAdmin}
+              className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                !activeProject && activeView === "admin"
+                  ? "bg-slate-100 text-slate-900 font-extrabold shadow-2xs border border-slate-200"
+                  : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+              } ${isCollapsed ? "justify-center px-0" : ""}`}
+              title="Upload — Knowledge Base"
+            >
+              <ShieldCheck className="w-4 h-4 text-slate-500 shrink-0" />
+              {!isCollapsed && <span>Upload</span>}
+            </button>
+          )}
         </div>
 
         {(activeProject || isDashboardChat) && (
@@ -227,7 +244,7 @@ export const SidebarNavigator: React.FC<Props> = ({
                             <Pencil className="w-3 h-3" />
                           </button>
                           <button
-                            onClick={() => handleDelete(chat.chat_id)}
+                            onClick={() => setDeletingChatId(chat.chat_id)}
                             className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded cursor-pointer"
                             title="Delete"
                           >
@@ -271,21 +288,6 @@ export const SidebarNavigator: React.FC<Props> = ({
                   <Settings className="w-4 h-4 text-slate-500" />
                   <span>Settings</span>
                 </button>
-                {user?.is_admin && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowProfileMenu(false);
-                      onSelectAdmin();
-                    }}
-                    className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg transition-colors cursor-pointer font-medium text-xs ${
-                      activeView === "admin" ? "bg-slate-100 text-slate-900 font-bold" : "text-slate-700 hover:bg-slate-100"
-                    }`}
-                  >
-                    <ShieldCheck className="w-4 h-4 text-slate-500" />
-                    <span>Admin</span>
-                  </button>
-                )}
               </div>
               <button
                 type="button"
@@ -316,7 +318,7 @@ export const SidebarNavigator: React.FC<Props> = ({
                 <div className="text-xs font-extrabold text-slate-900 truncate group-hover:text-brand-orange transition-colors">
                   {user?.username}
                 </div>
-                {user?.is_admin && <div className="text-[10px] text-brand-orange font-mono font-bold truncate">Admin</div>}
+                {user?.is_admin && <div className="text-[10px] text-brand-orange font-mono font-bold truncate">Upload Access</div>}
               </div>
             </div>
             <ChevronUp className="w-4 h-4 text-slate-400 group-hover:text-brand-orange transition-colors shrink-0" />
@@ -334,6 +336,17 @@ export const SidebarNavigator: React.FC<Props> = ({
           </div>
         )}
       </div>
+
+      {deletingChatId && (
+        <ConfirmModal
+          title="Delete chat?"
+          message="This can't be undone."
+          confirmLabel="Delete"
+          destructive
+          onConfirm={confirmDelete}
+          onCancel={() => setDeletingChatId(null)}
+        />
+      )}
     </aside>
   );
 };

@@ -66,7 +66,13 @@ async def ADM_ensure_indexes() -> None:
     await db[ADM_COLLECTION_SKILLS].create_index(
         [("kind", ASCENDING), ("scope", ASCENDING), ("skill_id", ASCENDING)]
     )
-    await db[ADM_COLLECTION_SKILLS].create_index([("skill_id", ASCENDING), ("version", ASCENDING)])
+    # Enforces the version-uniqueness invariant ADM_next_skill_version
+    # relies on: skill_id+scope+version is now a real per-document key
+    # (each write inserts a new version doc instead of upserting over the
+    # old one), so this is safe to make unique.
+    await db[ADM_COLLECTION_SKILLS].create_index(
+        [("skill_id", ASCENDING), ("scope", ASCENDING), ("version", ASCENDING)], unique=True,
+    )
     await db[ADM_COLLECTION_SKILLS].create_index([("created_by_user_id", ASCENDING)])
 
     await db[ADM_COLLECTION_EXECUTION_CONTRACTS].create_index([("project_id", ASCENDING)])

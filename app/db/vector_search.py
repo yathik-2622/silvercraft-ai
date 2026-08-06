@@ -24,12 +24,16 @@ present (e.g. running against plain local mongod with no Atlas Search),
 ADM_semantic_search transparently falls back to in-python cosine similarity
 over the same collection so the demo still runs end-to-end.
 """
+import logging
+
 import numpy as np
 
 from app.config import ADM_get_settings
 from app.db.mongo_client import ADM_get_db
 from app.db.collections import ADM_COLLECTION_MODELING_REFERENCE
 from app.llm.embeddings import ADM_embed_text, ADM_embed_texts_batch
+
+logger = logging.getLogger(__name__)
 
 
 def ADM_cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -114,21 +118,30 @@ async def ADM_upsert_modeling_reference_chunks(
 
     for chunk, embedding in zip(chunks, embeddings):
         chunk_id = f"{source_doc_id}_chunk_{chunk['chunk_index']}"
+        fields = {
+            "chunk_id": chunk_id,
+            "source_doc_id": source_doc_id,
+            "chunk_index": chunk["chunk_index"],
+            "char_start": chunk["char_start"],
+            "char_end": chunk["char_end"],
+            "doc_type": doc_type,
+            "title": title,
+            "content": chunk["content"],
+            "embedding": embedding,
+        }
+        # Only present for the "parent_child" chunking strategy (app/core/
+        # chunking.py::ADM_chunk_parent_child) — the child's own `content`
+        # is still what's embedded/matched on above; parent_content is the
+        # larger surrounding context ADM_semantic_search/ADM_build_task_context
+        # can hand to the LLM once this child matches, without a second
+        # collection or a follow-up lookup.
+        if "parent_chunk_index" in chunk:
+            fields["parent_chunk_index"] = chunk["parent_chunk_index"]
+            fields["parent_content"] = chunk["parent_content"]
         await db[ADM_COLLECTION_MODELING_REFERENCE].update_one(
-            {"chunk_id": chunk_id},
-            {"$set": {
-                "chunk_id": chunk_id,
-                "source_doc_id": source_doc_id,
-                "chunk_index": chunk["chunk_index"],
-                "char_start": chunk["char_start"],
-                "char_end": chunk["char_end"],
-                "doc_type": doc_type,
-                "title": title,
-                "content": chunk["content"],
-                "embedding": embedding,
-            }},
-            upsert=True,
+            {"chunk_id": chunk_id}, {"$set": fields}, upsert=True,
         )
+    logger.info("Upserted %d modeling_reference chunk(s) for source_doc_id=%s (doc_type=%s)", len(chunks), source_doc_id, doc_type)
     return len(chunks)
 
 
@@ -145,6 +158,23 @@ async def ADM_delete_modeling_reference_chunks(source_doc_id: str) -> int:
 # SEPARATE Atlas Vector Search index from modeling_reference's (different
 # collection, different index name — see README for both index definitions).
 # ---------------------------------------------------------------------------
+
+async def ADM_next_skill_version(skill_id: str, scope: str) -> int:
+    """Single source of truth for skill versioning, used by every write
+    site (admin YAML upload, in-chat YAML upload, Skill Normalizer
+    approval): 1 for a brand-new skill_id+scope, otherwise the current max
+    version + 1. Server-computed rather than trusting a version field the
+    caller might supply, so a stale/duplicate value in a re-uploaded YAML
+    can't silently overwrite existing data — each write now lands as its
+    own new document instead of upserting over the prior version."""
+    from app.db.collections import ADM_COLLECTION_SKILLS
+
+    db = ADM_get_db()
+    latest = await db[ADM_COLLECTION_SKILLS].find_one(
+        {"skill_id": skill_id, "scope": scope}, sort=[("version", -1)],
+    )
+    return (latest["version"] + 1) if latest else 1
+
 
 async def ADM_embed_and_store_skill(skill_id: str, version: int, scope: str) -> None:
     """
@@ -172,6 +202,29 @@ async def ADM_embed_and_store_skill(skill_id: str, version: int, scope: str) -> 
     await db[ADM_COLLECTION_SKILLS].update_one(
         {"skill_id": skill_id, "scope": scope, "version": version}, {"$set": {"embedding": embedding}}
     )
+
+
+def ADM__dedupe_latest_skill_version(docs: list[dict]) -> list[dict]:
+    """Skills now genuinely version (see ADM__next_skill_version in
+    app/api/routes_admin.py) — a re-uploaded/re-created skill_id gets its
+    own new document instead of overwriting the old one, so an older
+    version's embedding can still surface in search. Keep only the
+    highest-version doc per (skill_id, scope), preserving the relative
+    order (== score order) of whichever entry survives."""
+    best_version: dict[tuple, int] = {}
+    for d in docs:
+        key = (d.get("skill_id"), d.get("scope"))
+        if key not in best_version or d.get("version", 1) > best_version[key]:
+            best_version[key] = d.get("version", 1)
+    seen: set = set()
+    out = []
+    for d in docs:
+        key = (d.get("skill_id"), d.get("scope"))
+        if d.get("version", 1) != best_version[key] or key in seen:
+            continue
+        seen.add(key)
+        out.append(d)
+    return out
 
 
 async def ADM_semantic_search_skills(query: str, top_k: int = 5, kind: str | None = None) -> list[dict]:
@@ -207,9 +260,13 @@ async def ADM_semantic_search_skills(query: str, top_k: int = 5, kind: str | Non
         ]
         if kind:
             pipeline[0]["$vectorSearch"]["filter"] = {"kind": {"$eq": kind}}
-        results = await coll.aggregate(pipeline).to_list(length=top_k)
+        # Over-fetch a bit so dedupe-by-latest-version still leaves top_k
+        # distinct skills even when an older version of one also scored
+        # well.
+        pipeline[0]["$vectorSearch"]["limit"] = top_k * 3
+        results = await coll.aggregate(pipeline).to_list(length=top_k * 3)
         if results:
-            return results
+            return ADM__dedupe_latest_skill_version(results)[:top_k]
     except Exception:
         pass  # Atlas Search index likely doesn't exist yet on this cluster — fall back
 
@@ -218,8 +275,8 @@ async def ADM_semantic_search_skills(query: str, top_k: int = 5, kind: str | Non
     scored = [(ADM_cosine_similarity(query_vec, d.get("embedding") or []), d) for d in docs if d.get("embedding")]
     scored.sort(key=lambda t: t[0], reverse=True)
     out = []
-    for score, d in scored[:top_k]:
+    for score, d in scored:
         d = {k: v for k, v in d.items() if k != "embedding"}
         d["_score"] = score
         out.append(d)
-    return out
+    return ADM__dedupe_latest_skill_version(out)[:top_k]

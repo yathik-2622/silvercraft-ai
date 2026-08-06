@@ -37,17 +37,20 @@ class ADM_UserLoginRequest(BaseModel):
 
 
 class ADM_User(BaseModel):
-    """Stored document — includes hashed_password, NEVER returned to a client."""
+    """Stored document — includes hashed_password, NEVER returned to a client.
+    No is_admin field here — admin status isn't stored per-user, it's
+    computed live from settings.ADMIN_USERNAMES (app/core/auth.py's
+    ADM_is_admin_username)."""
     user_id: str = Field(default_factory=lambda: ADM_new_id("user"))
     username: str
     email: Optional[str] = None
     hashed_password: str
-    is_admin: bool = False   # promoted via scripts/promote_admin.py, never via a public API
     created_at: str = Field(default_factory=ADM_now)
 
 
 class ADM_UserPublic(BaseModel):
-    """Safe-to-return shape — no hashed_password."""
+    """Safe-to-return shape — no hashed_password. is_admin is computed at
+    response time from ADM_is_admin_username, never stored."""
     user_id: str
     username: str
     email: Optional[str] = None
@@ -95,6 +98,12 @@ class ADM_Project(BaseModel):
     target_platform: Optional[str] = None  # postgresql | snowflake | sqlserver — see app/tools/ddl_generator.py; None treated as postgresql
     collaborator_user_ids: list[str] = Field(default_factory=list)
     created_at: str = Field(default_factory=ADM_now)
+    # Denormalized so GET /projects can render the dashboard's Business
+    # Standards chip without an N+1 lookup per project. Set by the
+    # PUT/PATCH /{project_id}/business-standards routes, never read
+    # elsewhere as the source of truth (the business_standards collection
+    # itself is) — this is purely a "does one exist" flag for the UI.
+    has_business_standards: bool = False
 
 
 class ADM_ProjectPatchRequest(BaseModel):
@@ -135,6 +144,12 @@ class ADM_FileRef(BaseModel):
     """Reference to an uploaded file or DB connection — never raw content."""
     raw_file_id: Optional[str] = None
     db_connection_id: Optional[str] = None
+    # Display-only fields, populated by ADM__enrich_file_refs_for_display at
+    # persist time so a reloaded chat can still render the "file attached to
+    # this message" card. Never consulted at execution time — the graph's own
+    # source-ref resolution re-looks-up raw_file_id/db_connection_id fresh.
+    original_filename: Optional[str] = None
+    row_count: Optional[int] = None
 
 
 class ADM_MessageCreateRequest(BaseModel):
@@ -180,7 +195,7 @@ class ADM_Skill(BaseModel):
     stage: Optional[int] = None            # 1-4, Canonical/3NF staging
     modeling_style: Optional[str] = "canonical"
     depends_on: list[str] = Field(default_factory=list)  # task_ids within a workflow
-    task_list: list[dict] = Field(default_factory=list)  # only present for kind=workflow
+    task_list: list[dict] = Field(default_factory=list)  # only present for kind=workflow — each entry {task_id, skill_id, name}
     embedding: Optional[list[float]] = None   # skill-level semantic search — see app/db/vector_search.py
     created_by_user_id: Optional[str] = None  # None for admin/global uploads (nothing personal to
                                                # attribute); the actual user for anything from the
@@ -200,7 +215,15 @@ class ADM_SkillDraft(BaseModel):
     project_id: str
     extracted: dict[str, Any] = Field(default_factory=dict)
     missing_fields: list[str] = Field(default_factory=list)
-    status: Literal["pending", "awaiting_clarification", "approved"] = "pending"
+    # "failed": the extraction LLM call itself raised, before there was
+    # anything to review — distinct from "awaiting_clarification" (a
+    # successful extraction that's merely incomplete). Needed so a caller
+    # polling GET /skill-drafts/{id} for a draft_id that failed before this
+    # document ever existed has *something* to eventually see — see
+    # ADM_normalize_skill_task_async, which now pre-inserts a placeholder
+    # draft up front specifically so this status has somewhere to land.
+    status: Literal["pending", "awaiting_clarification", "approved", "failed"] = "pending"
+    error: Optional[str] = None
     target_scope: str = "user"   # "user" for the normal in-chat import flow, "global" for admin uploads —
                                   # same Normalizer/approve pipeline, different destination scope
     created_at: str = Field(default_factory=ADM_now)
@@ -234,10 +257,17 @@ class ADM_PlanComment(BaseModel):
     author_user_id: str
     text: str
     created_at: str = Field(default_factory=ADM_now)
+    # None = plan-wide (the original behavior). Set = scoped to one task's
+    # planned_task["task_id"] — ADM_execute_one_task injects matching
+    # comments into that task's own input_payload as a real instruction,
+    # not just a passive annotation. See ADM_add_plan_comment for the
+    # once-approved write restriction this implies.
+    task_id: Optional[str] = None
 
 
 class ADM_CommentCreateRequest(BaseModel):
     text: str
+    task_id: Optional[str] = None
 
 
 class ADM_ExecutionContract(BaseModel):
@@ -347,6 +377,26 @@ class ADM_KbDocument(BaseModel):
     status: ADM_KbDocumentStatus = ADM_KbDocumentStatus.processing
     uploaded_by: str                     # admin user_id
     uploaded_at: str = Field(default_factory=ADM_now)
+    # One-per-DOCUMENT LLM summary/keywords (app/tools/kb_metadata.py),
+    # set once ingestion completes — never duplicated onto every chunk row.
+    # Best-effort: "" / [] if the LLM call failed, never blocks ingestion.
+    summary: str = ""
+    keywords: list[str] = Field(default_factory=list)
+    # Dedupe key (app/core/fingerprint.py) — set at upload time, before
+    # ingestion even starts, so a re-upload of the same content is caught
+    # up front rather than after a wasted chunk/embed pass.
+    content_hash: str = ""
+    # Original file bytes, stored to local_blob_storage alongside the
+    # already-extracted full_text — added specifically so a citation can
+    # open a true native preview (real PDF embed, real CSV/XLSX table),
+    # not just the extracted-text-with-highlight view. Scoped to KB docs
+    # only — raw source data files uploaded in chat still never touch
+    # disk (app/tools/upload_ingestion.py's privacy boundary is unchanged).
+    # None for documents ingested before this field existed — the preview
+    # route degrades to the existing text view when unset, no migration
+    # needed.
+    blob_path: Optional[str] = None
+    original_extension: str = ""
 
 
 class ADM_BusinessStandardsDocument(BaseModel):
@@ -363,6 +413,12 @@ class ADM_BusinessStandardsDocument(BaseModel):
     full_text: str
     uploaded_by: str
     uploaded_at: str = Field(default_factory=ADM_now)
+
+
+class ADM_BusinessStandardsUpdateRequest(BaseModel):
+    """The direct-text-edit path (PATCH) — the file-upload path (PUT) uses
+    multipart Form fields instead, see routes_projects.py."""
+    full_text: Optional[str] = None
 
 
 class ADM_Citation(BaseModel):

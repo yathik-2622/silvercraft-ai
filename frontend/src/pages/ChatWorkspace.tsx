@@ -1,16 +1,27 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "motion/react";
-import { ArrowLeft, Bot, BookOpen, Cpu, Paperclip, Send, User, Users, Workflow, MessagesSquare, Wrench, X } from "lucide-react";
-import { chatsApi, contractsApi, messagesApi, settingsApi, skillsApi } from "../api/client";
+import { ArrowLeft, Bot, ChevronDown, LayoutPanelTop, Paperclip, Send, Users, Workflow, Wrench, X } from "lucide-react";
+import { chatsApi, contractsApi, dbConnectionsApi, messagesApi, settingsApi, skillsApi } from "../api/client";
 import { openReasoningSocket } from "../api/reasoningSocket";
-import type { ChatMessage, Citation, ModelCatalogEntry, Project, ProjectLayer, RawFile, ReasoningEvent, Skill } from "../types";
-import { ReasoningPanel } from "../components/ReasoningPanel";
+import type {
+  ChatArtifact,
+  ChatMessage,
+  Citation,
+  ModelCatalogEntry,
+  Project,
+  ProjectLayer,
+  RawFile,
+  ReasoningEvent,
+  Skill,
+} from "../types";
 import { CollaboratorsModal } from "../components/CollaboratorsModal";
-import { ViewSourceModal } from "../components/ViewSourceModal";
+import { SourcePreviewModal } from "../components/SourcePreviewModal";
 import { CreateProjectPromptCard } from "../components/CreateProjectPromptCard";
-import { DbConnectionPicker } from "../components/DbConnectionPicker";
 import { FileUploadPicker } from "../components/FileUploadPicker";
 import { PlanCanvas } from "../components/canvas/PlanCanvas";
+import { ArtifactCanvas } from "../components/canvas/ArtifactCanvas";
+import { detectArtifactKind } from "../components/canvas/detectArtifactKind";
+import { MessageBubble } from "../components/chat/MessageBubble";
 import { SlashCommandMenu, type SlashMenuItem } from "../components/skills/SlashCommandMenu";
 import { CreateSkillModal } from "../components/skills/CreateSkillModal";
 import { useWorkspace } from "../workspace/WorkspaceContext";
@@ -48,10 +59,15 @@ function pickRandom<T>(items: T[]): T {
   return items[Math.floor(Math.random() * items.length)];
 }
 
-function formatTime(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+const CANVAS_WIDTH_STORAGE_KEY = "adm_canvas_width";
+const CANVAS_WIDTH_MIN = 360;
+const CANVAS_WIDTH_MAX = 900;
+const CANVAS_WIDTH_DEFAULT = 480;
+
+// Exported for a pure-logic Vitest test — the actual drag handler just
+// forwards `window.innerWidth - event.clientX` through this.
+export function ADM_clampCanvasWidth(raw: number): number {
+  return Math.min(CANVAS_WIDTH_MAX, Math.max(CANVAS_WIDTH_MIN, raw));
 }
 
 export const ChatWorkspace: React.FC<Props> = ({ project, onBack }) => {
@@ -69,18 +85,65 @@ export const ChatWorkspace: React.FC<Props> = ({ project, onBack }) => {
   const [contractId, setContractId] = useState<string | null>(null);
   const [projectPromptSubmitting, setProjectPromptSubmitting] = useState(false);
   const [projectPromptError, setProjectPromptError] = useState<string | null>(null);
-  const [rightTab, setRightTab] = useState<"reasoning" | "plan">("reasoning");
+  const [rightTab, setRightTab] = useState<"artifacts" | "plan">("artifacts");
+  const [artifacts, setArtifacts] = useState<ChatArtifact[]>([]);
+  const [activeArtifactId, setActiveArtifactId] = useState<string | null>(null);
+  const activeArtifactDebounceRef = useRef<number | null>(null);
+  // Mirrors `reasoningEvents` so the WS handler closure (stable across
+  // re-renders, only rebuilt when activeChatId/refreshChats change) can
+  // read the LATEST value when a turn completes, not whatever it was at
+  // connection-open time.
+  const reasoningEventsRef = useRef<typeof reasoningEvents>([]);
   const [skills, setSkills] = useState<Skill[]>([]);
   const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([]);
   const [selectedDbConnectionId, setSelectedDbConnectionId] = useState<string | null>(null);
-  const [attachedFile, setAttachedFile] = useState<RawFile | null>(null);
+  const [attachedFiles, setAttachedFiles] = useState<RawFile[]>([]);
   const [slashSelectedIndex, setSlashSelectedIndex] = useState(0);
   const [showCreateSkillModal, setShowCreateSkillModal] = useState(false);
   const [orchestratorModel, setOrchestratorModel] = useState<string | null>(null);
   const [modelOptions, setModelOptions] = useState<ModelCatalogEntry[]>([]);
+  const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
   const [viewingCitation, setViewingCitation] = useState<Citation | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [greeting] = useState(() => pickRandom(GREETINGS));
+  const [canvasWidth, setCanvasWidth] = useState(() => {
+    const stored = Number(localStorage.getItem(CANVAS_WIDTH_STORAGE_KEY));
+    return Number.isFinite(stored) && stored > 0 ? ADM_clampCanvasWidth(stored) : CANVAS_WIDTH_DEFAULT;
+  });
+  // The fixed canvasWidth only applies at the lg breakpoint (1024px) — below
+  // that the panels stack full-width via flex-col, matching the drag handle
+  // itself being `hidden lg:block`.
+  const [isDesktop, setIsDesktop] = useState(() => window.matchMedia("(min-width: 1024px)").matches);
+
+  useEffect(() => {
+    localStorage.setItem(CANVAS_WIDTH_STORAGE_KEY, String(canvasWidth));
+  }, [canvasWidth]);
+
+  useEffect(() => {
+    const mql = window.matchMedia("(min-width: 1024px)");
+    const onChange = () => setIsDesktop(mql.matches);
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
+  }, []);
+
+  useEffect(() => {
+    const onMove = (event: PointerEvent) => setCanvasWidth(ADM_clampCanvasWidth(window.innerWidth - event.clientX));
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    const startResize = () => {
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    };
+    window.addEventListener("adm:canvas-resize", startResize);
+    return () => {
+      window.removeEventListener("adm:canvas-resize", startResize);
+      onUp();
+    };
+  }, []);
+
+  const startCanvasResize = () => window.dispatchEvent(new Event("adm:canvas-resize"));
   // Chats this component itself created/hydrated already have correct local
   // `messages` state — skip the refetch-on-select-change so an optimistic
   // send doesn't get clobbered by the chat's still-empty server copy.
@@ -89,6 +152,10 @@ export const ChatWorkspace: React.FC<Props> = ({ project, onBack }) => {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isThinking]);
+
+  useEffect(() => {
+    reasoningEventsRef.current = reasoningEvents;
+  }, [reasoningEvents]);
 
   useEffect(() => {
     if (activeChatId === selfHandledChatId.current) return;
@@ -148,6 +215,22 @@ export const ChatWorkspace: React.FC<Props> = ({ project, onBack }) => {
     skillsApi.list().then(setSkills).catch(() => {});
   }, []);
 
+  // DB connections are now project-creation-time-only (Phase 5) — no more
+  // per-message picker in the composer. A project has at most one
+  // connection since creation is the only entry point now, so "first" is
+  // unambiguous; automatically included in every tier3 send for this
+  // project, with zero action required in chat.
+  useEffect(() => {
+    if (!project) {
+      setSelectedDbConnectionId(null);
+      return;
+    }
+    dbConnectionsApi
+      .list(project.project_id)
+      .then((conns) => setSelectedDbConnectionId(conns[0]?.db_connection_id ?? null))
+      .catch(() => setSelectedDbConnectionId(null));
+  }, [project]);
+
   useEffect(() => {
     settingsApi
       .discoverModels()
@@ -198,15 +281,48 @@ export const ChatWorkspace: React.FC<Props> = ({ project, onBack }) => {
         setReasoningEvents((prev) => [...prev, event]);
       },
       onAssistantMessage: (message) => {
-        setMessages((prev) => [...prev, message]);
+        setMessages((prev) => [...prev, { ...message, _reasoningSnapshot: reasoningEventsRef.current }]);
         setIsThinking(false);
         setStreamingText("");
+        setReasoningEvents([]);
         refreshChats();
       },
       onContractEvent: (event) => {
         if (event.type === "plan_ready" && typeof event.payload.contract_id === "string") {
           setContractId(event.payload.contract_id);
         }
+      },
+      onArtifact: (event) => {
+        const { payload } = event;
+        const kind = detectArtifactKind(payload.output);
+        const artifact: ChatArtifact = {
+          artifact_id: `${payload.task_id}:${Date.now()}`,
+          task_id: payload.task_id,
+          skill_id: payload.skill_id,
+          stage: payload.stage,
+          label: payload.label,
+          output: payload.output,
+          confidence: payload.confidence,
+          kind,
+          received_at: new Date().toISOString(),
+        };
+        setArtifacts((prev) => [...prev, artifact]);
+        setRightTab("artifacts");
+        // Multiple tasks in the same stage can complete within
+        // milliseconds of each other (Send-based fan-out) — debounce which
+        // one ends up focused so the canvas doesn't flash through several
+        // auto-switches almost instantly. The history strip still records
+        // every artifact immediately and losslessly via setArtifacts above.
+        if (activeArtifactDebounceRef.current) window.clearTimeout(activeArtifactDebounceRef.current);
+        activeArtifactDebounceRef.current = window.setTimeout(() => {
+          setActiveArtifactId(artifact.artifact_id);
+        }, 400);
+        // Also surface a short line in this turn's reasoning accordion —
+        // one source of truth (the artifact event) feeding two UI surfaces.
+        setReasoningEvents((prev) => [
+          ...prev,
+          { type: "log", payload: { source: payload.source, message: `${payload.label} (stage ${payload.stage}) ready — ${kind}` } },
+        ]);
       },
     });
 
@@ -230,15 +346,24 @@ export const ChatWorkspace: React.FC<Props> = ({ project, onBack }) => {
 
     const skillIdsForThisMessage = selectedSkillIds;
     const dbConnectionForThisMessage = selectedDbConnectionId;
-    const fileForThisMessage = attachedFile;
+    const filesForThisMessage = attachedFiles;
     setInputText("");
     setSelectedSkillIds([]);
     setSelectedDbConnectionId(null);
-    setAttachedFile(null);
-    setMessages((prev) => [...prev, { role: "user", content, created_at: new Date().toISOString() }]);
+    setAttachedFiles([]);
+    const optimisticFileRefs = [
+      ...filesForThisMessage.map((f) => ({ raw_file_id: f.raw_file_id, original_filename: f.original_filename, row_count: f.row_count })),
+      ...(dbConnectionForThisMessage ? [{ db_connection_id: dbConnectionForThisMessage }] : []),
+    ];
+    setMessages((prev) => [
+      ...prev,
+      { role: "user", content, created_at: new Date().toISOString(), ...(optimisticFileRefs.length > 0 ? { file_refs: optimisticFileRefs } : {}) },
+    ]);
     setReasoningEvents([]);
     setStreamingText("");
     setIsThinking(true);
+    setArtifacts([]);
+    setActiveArtifactId(null);
 
     try {
       let id = activeChatId;
@@ -250,7 +375,7 @@ export const ChatWorkspace: React.FC<Props> = ({ project, onBack }) => {
         refreshChats();
       }
       const fileRefs = [
-        ...(fileForThisMessage ? [{ raw_file_id: fileForThisMessage.raw_file_id }] : []),
+        ...filesForThisMessage.map((f) => ({ raw_file_id: f.raw_file_id })),
         ...(dbConnectionForThisMessage ? [{ db_connection_id: dbConnectionForThisMessage }] : []),
       ];
       await messagesApi.send(id, content, fileRefs, skillIdsForThisMessage);
@@ -265,6 +390,15 @@ export const ChatWorkspace: React.FC<Props> = ({ project, onBack }) => {
         },
       ]);
     }
+  };
+
+  const handleCopy = (text: string) => {
+    navigator.clipboard.writeText(text).catch(() => {});
+  };
+
+  const handleRegenerate = () => {
+    const lastUserMessage = [...messages].reverse().find((m) => m.role === "user");
+    if (lastUserMessage) handleSend(lastUserMessage.content);
   };
 
   const handleCreateProject = async (name: string, domain: string, layer: ProjectLayer) => {
@@ -287,54 +421,89 @@ export const ChatWorkspace: React.FC<Props> = ({ project, onBack }) => {
     }
   };
 
+  const currentModelLabel = modelOptions.find((o) => o.id === (orchestratorModel || "gpt-4o"))?.name || orchestratorModel || "gpt-4o";
+
   const composerInner = (
-    <div className="space-y-1.5">
-      {activeChatId && (
-        <div className="flex items-center justify-end gap-1.5">
-          <Cpu className="w-3 h-3 text-slate-400" />
-          <select
-            value={orchestratorModel || "gpt-4o"}
-            onChange={(e) => handleModelChange(e.target.value)}
-            title="Orchestrator model for this chat"
-            className="text-[10px] font-bold text-slate-500 bg-transparent border-none focus:outline-none cursor-pointer hover:text-brand-orange"
-          >
-            {modelOptions.map((opt) => (
-              <option key={opt.id} value={opt.id}>
-                {opt.name}
-              </option>
-            ))}
-          </select>
-        </div>
+    <div className="relative rounded-2xl border border-slate-200 bg-white shadow-[0_8px_24px_rgba(23,20,15,0.08)]">
+      {isSlashCommand && (
+        <SlashCommandMenu
+          items={slashItems}
+          selectedIndex={slashSelectedIndex}
+          onHover={setSlashSelectedIndex}
+          onSelect={handleSelectSlashItem}
+        />
       )}
 
-      {attachedFile && (
-        <div className="flex flex-wrap gap-1.5">
-          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200 font-bold text-[10px]">
-            <Paperclip className="w-2.5 h-2.5" />
-            {attachedFile.original_filename} ({attachedFile.row_count} rows)
+      <div className="flex flex-wrap items-center gap-2 px-3 pt-2.5">
+        {activeChatId && (
+          <div className="relative">
             <button
-              onClick={() => setAttachedFile(null)}
-              className="hover:bg-emerald-200 rounded p-0.5 cursor-pointer"
-              title="Remove"
+              type="button"
+              onClick={() => setIsModelMenuOpen((v) => !v)}
+              title="Orchestrator model for this chat"
+              className="flex items-center justify-between min-w-28 max-w-44 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-[10px] font-bold text-slate-600 hover:border-slate-300 hover:bg-slate-100 transition cursor-pointer"
             >
-              <X className="w-2.5 h-2.5" />
+              <span className="truncate">{currentModelLabel}</span>
+              <ChevronDown className="ml-1.5 w-3 h-3 text-slate-400 shrink-0" />
             </button>
-          </span>
-        </div>
-      )}
+            {isModelMenuOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setIsModelMenuOpen(false)} />
+                <div className="absolute bottom-full left-0 mb-1.5 w-56 max-h-48 overflow-y-auto rounded-2xl border border-slate-200 bg-white p-1.5 shadow-lg z-50">
+                  {modelOptions.map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => {
+                        handleModelChange(opt.id);
+                        setIsModelMenuOpen(false);
+                      }}
+                      className={`w-full text-left px-3 py-2 text-[11px] font-semibold rounded-xl transition cursor-pointer ${
+                        (orchestratorModel || "gpt-4o") === opt.id ? "bg-brand-orange-light text-brand-orange" : "text-slate-600 hover:bg-slate-50"
+                      }`}
+                    >
+                      {opt.name}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+        <FileUploadPicker
+          projectId={project?.project_id}
+          onUploaded={(file) => setAttachedFiles((prev) => [...prev, file])}
+        />
+      </div>
 
-      {selectedSkillIds.length > 0 && (
-        <div className="flex flex-wrap gap-1.5">
+      {(attachedFiles.length > 0 || selectedSkillIds.length > 0) && (
+        <div className="flex flex-wrap gap-1.5 px-3 pt-2">
+          {attachedFiles.map((file) => (
+            <span
+              key={file.raw_file_id}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-slate-200 bg-slate-50 text-slate-700 font-semibold text-[10px]"
+            >
+              <Paperclip className="w-2.5 h-2.5 text-slate-400" />
+              {file.original_filename} ({file.row_count} rows)
+              <button
+                onClick={() => setAttachedFiles((prev) => prev.filter((f) => f.raw_file_id !== file.raw_file_id))}
+                className="hover:bg-slate-200 rounded-full p-0.5 cursor-pointer"
+                title="Remove"
+              >
+                <X className="w-2.5 h-2.5" />
+              </button>
+            </span>
+          ))}
           {selectedSkillIds.map((skillId) => (
             <span
               key={skillId}
-              className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-blue-50 text-blue-700 border border-blue-200 font-bold text-[10px]"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-brand-orange/25 bg-brand-orange-light text-brand-orange font-semibold text-[10px]"
             >
               <Wrench className="w-2.5 h-2.5" />
               {skillId}
               <button
                 onClick={() => setSelectedSkillIds((prev) => prev.filter((id) => id !== skillId))}
-                className="hover:bg-blue-200 rounded p-0.5 cursor-pointer"
+                className="hover:bg-brand-orange/20 rounded-full p-0.5 cursor-pointer"
                 title="Remove"
               >
                 <X className="w-2.5 h-2.5" />
@@ -344,23 +513,7 @@ export const ChatWorkspace: React.FC<Props> = ({ project, onBack }) => {
         </div>
       )}
 
-      <div className="relative flex items-center gap-1.5">
-        <FileUploadPicker projectId={project?.project_id} onUploaded={setAttachedFile} />
-        {project && (
-          <DbConnectionPicker
-            projectId={project.project_id}
-            selectedId={selectedDbConnectionId}
-            onSelect={setSelectedDbConnectionId}
-          />
-        )}
-        {isSlashCommand && (
-          <SlashCommandMenu
-            items={slashItems}
-            selectedIndex={slashSelectedIndex}
-            onHover={setSlashSelectedIndex}
-            onSelect={handleSelectSlashItem}
-          />
-        )}
+      <div className="flex items-center gap-2 px-3 pb-2.5 pt-2">
         <input
           type="text"
           placeholder="Type a message, or / for skills..."
@@ -394,12 +547,12 @@ export const ChatWorkspace: React.FC<Props> = ({ project, onBack }) => {
             }
           }}
           autoFocus
-          className="w-full pl-3 pr-10 py-2.5 bg-slate-100 border-none rounded-xl text-xs text-slate-800 placeholder-slate-400 focus:ring-2 focus:ring-brand-orange focus:bg-white shadow-inner transition-all font-medium disabled:opacity-60"
+          className="flex-1 bg-transparent border-none text-xs text-slate-800 placeholder-slate-400 focus:outline-none font-medium disabled:opacity-60"
         />
         <button
           onClick={() => handleSend()}
           disabled={!inputText.trim()}
-          className="absolute right-1.5 top-1.5 p-1.5 bg-brand-orange hover:bg-brand-orange-hover disabled:opacity-40 text-white rounded-lg shadow-2xs transition-all cursor-pointer"
+          className="inline-flex items-center justify-center h-8 w-8 shrink-0 bg-brand-orange hover:bg-brand-orange-hover disabled:opacity-40 text-white rounded-xl shadow-2xs transition-all cursor-pointer"
         >
           <Send className="w-3.5 h-3.5" />
         </button>
@@ -446,8 +599,8 @@ export const ChatWorkspace: React.FC<Props> = ({ project, onBack }) => {
           Couldn't load this chat: {loadError}
         </div>
       ) : (
-        <div className="flex-1 grid grid-cols-1 lg:grid-cols-2 gap-4 p-4 min-h-0">
-          <div className="h-full flex flex-col bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+        <div className="flex-1 flex flex-col lg:flex-row gap-4 p-4 min-h-0">
+          <div className="h-full flex-1 min-w-0 flex flex-col bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
             {isEmpty ? (
               <div className="flex-1 flex flex-col items-center justify-center gap-5 p-6">
                 <div className="text-center space-y-2">
@@ -476,61 +629,25 @@ export const ChatWorkspace: React.FC<Props> = ({ project, onBack }) => {
             ) : (
               <>
                 <div className="flex-1 overflow-y-auto p-3.5 space-y-3.5 bg-slate-50/30">
-                  {messages.map((msg, idx) => (
-                    <div key={idx} className={`flex gap-2.5 ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-                      {msg.role === "assistant" && (
-                        <div className="w-7 h-7 rounded-lg bg-brand-orange-light text-brand-orange flex items-center justify-center shrink-0 border border-brand-orange/20 mt-1 shadow-2xs">
-                          <Bot className="w-4 h-4" />
-                        </div>
-                      )}
-                      <div
-                        className={`max-w-[88%] rounded-2xl p-3 text-xs space-y-1.5 leading-relaxed shadow-2xs ${
-                          msg.role === "user"
-                            ? "bg-brand-orange text-white rounded-tr-none font-medium"
-                            : "bg-white text-slate-700 border border-slate-200 rounded-tl-none"
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-4 text-[10px] opacity-75 border-b border-current/10 pb-1">
-                          <span className="font-bold">{msg.role === "user" ? "You" : "Modeling Assistant"}</span>
-                          <span>{formatTime(msg.created_at)}</span>
-                        </div>
-                        <div className="whitespace-pre-wrap">{msg.content}</div>
-                        {msg.matched_skills && msg.matched_skills.length > 0 && (
-                          <div className="pt-1.5 border-t border-slate-100 flex flex-wrap gap-1">
-                            {msg.matched_skills.map((s) => (
-                              <span
-                                key={s.skill_id}
-                                title={s.purpose}
-                                className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200 text-[10px] font-bold"
-                              >
-                                {s.title}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                        {msg.citations && msg.citations.length > 0 && (
-                          <div className="pt-1.5 border-t border-slate-100 flex flex-wrap gap-1">
-                            {msg.citations.map((c, cIdx) => (
-                              <button
-                                key={cIdx}
-                                onClick={() => setViewingCitation(c)}
-                                title={c.snippet}
-                                className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 text-[10px] font-bold cursor-pointer"
-                              >
-                                <BookOpen className="w-2.5 h-2.5" />
-                                {c.title}
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                      {msg.role === "user" && (
-                        <div className="w-7 h-7 rounded-lg bg-slate-200 text-slate-700 flex items-center justify-center shrink-0 border border-slate-300 mt-1 shadow-2xs">
-                          <User className="w-4 h-4" />
-                        </div>
-                      )}
-                    </div>
-                  ))}
+                  {messages.map((msg, idx) => {
+                    const isLatestAssistant = msg.role === "assistant" && idx === messages.length - 1;
+                    const isCurrentTurn = idx === messages.length - 1;
+                    return (
+                      <MessageBubble
+                        key={idx}
+                        message={msg}
+                        isLatestAssistant={isLatestAssistant}
+                        reasoningEventsForThisTurn={
+                          msg.role === "assistant" ? (isCurrentTurn ? reasoningEvents : (msg._reasoningSnapshot ?? [])) : []
+                        }
+                        isStreamingThisTurn={isCurrentTurn && isThinking}
+                        onCopy={handleCopy}
+                        onRegenerate={handleRegenerate}
+                        onSelectCitation={setViewingCitation}
+                        onFollowUpClick={(q) => handleSend(q)}
+                      />
+                    );
+                  })}
 
                   {!project &&
                     !isThinking &&
@@ -548,11 +665,27 @@ export const ChatWorkspace: React.FC<Props> = ({ project, onBack }) => {
                     })()}
 
                   {isThinking && (
-                    <div className="flex gap-3 items-center text-xs text-brand-orange bg-white p-3 rounded-xl border border-slate-200 shadow-2xs">
-                      <div className="w-6 h-6 rounded-lg bg-brand-orange-light text-brand-orange flex items-center justify-center animate-pulse">
+                    <div className="flex gap-3 items-start text-xs text-brand-orange bg-white p-3 rounded-xl border border-slate-200 shadow-2xs">
+                      <div className="w-6 h-6 rounded-lg bg-brand-orange-light text-brand-orange flex items-center justify-center animate-pulse shrink-0">
                         <Bot className="w-3.5 h-3.5" />
                       </div>
-                      <span className="font-medium">Thinking...</span>
+                      <div className="min-w-0">
+                        {streamingText ? (
+                          <span className="font-medium whitespace-pre-wrap text-slate-700">{streamingText}</span>
+                        ) : (
+                          <span className="font-medium">
+                            Thinking...
+                            {connectionStatus === "connecting" && " (connecting)"}
+                            {connectionStatus === "closed" && " (disconnected)"}
+                          </span>
+                        )}
+                        {reasoningEvents.length > 0 && (
+                          <div className="text-[10px] text-slate-400 font-mono mt-0.5">
+                            {reasoningEvents[reasoningEvents.length - 1]?.payload.message ??
+                              `${reasoningEvents.length} step(s)`}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   )}
 
@@ -566,43 +699,57 @@ export const ChatWorkspace: React.FC<Props> = ({ project, onBack }) => {
             )}
           </div>
 
-          <div className="h-full flex flex-col min-h-0 gap-2">
-            {contractId && (
+          {(contractId || artifacts.length > 0) && (
+            <>
+              <div
+                onPointerDown={startCanvasResize}
+                className="hidden lg:block w-1.5 shrink-0 cursor-col-resize touch-none rounded-full bg-transparent hover:bg-brand-orange/20 transition-colors"
+                role="separator"
+                aria-label="Resize canvas"
+                title="Drag to resize"
+              />
+              <div
+                className="h-full flex flex-col min-h-0 gap-2 w-full lg:shrink-0"
+                style={isDesktop ? { width: canvasWidth } : undefined}
+              >
               <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-xl p-1 shrink-0 shadow-2xs">
                 <button
-                  onClick={() => setRightTab("reasoning")}
+                  onClick={() => setRightTab("artifacts")}
                   className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                    rightTab === "reasoning" ? "bg-brand-orange text-white" : "text-slate-600 hover:bg-slate-100"
+                    rightTab === "artifacts" ? "bg-brand-orange text-white" : "text-slate-600 hover:bg-slate-100"
                   }`}
                 >
-                  <MessagesSquare className="w-3.5 h-3.5" />
-                  Live Reasoning
+                  <LayoutPanelTop className="w-3.5 h-3.5" />
+                  Artifacts
                 </button>
-                <button
-                  onClick={() => setRightTab("plan")}
-                  className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                    rightTab === "plan" ? "bg-brand-orange text-white" : "text-slate-600 hover:bg-slate-100"
-                  }`}
-                >
-                  <Workflow className="w-3.5 h-3.5" />
-                  Plan
-                </button>
+                {contractId && (
+                  <button
+                    onClick={() => setRightTab("plan")}
+                    className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                      rightTab === "plan" ? "bg-brand-orange text-white" : "text-slate-600 hover:bg-slate-100"
+                    }`}
+                  >
+                    <Workflow className="w-3.5 h-3.5" />
+                    Plan
+                  </button>
+                )}
               </div>
-            )}
 
-            <div className="flex-1 min-h-0">
-              {rightTab === "plan" && contractId ? (
-                <PlanCanvas contractId={contractId} />
-              ) : (
-                <ReasoningPanel
-                  events={reasoningEvents}
-                  streamingText={streamingText}
-                  isThinking={isThinking}
-                  connectionStatus={connectionStatus}
-                />
-              )}
-            </div>
-          </div>
+              <div className="flex-1 min-h-0">
+                {rightTab === "plan" && contractId ? (
+                  <PlanCanvas contractId={contractId} />
+                ) : (
+                  <ArtifactCanvas
+                    artifacts={artifacts}
+                    activeArtifactId={activeArtifactId}
+                    onSelectArtifact={setActiveArtifactId}
+                    isEmpty={artifacts.length === 0}
+                  />
+                )}
+              </div>
+              </div>
+            </>
+          )}
         </div>
       )}
 
@@ -614,7 +761,7 @@ export const ChatWorkspace: React.FC<Props> = ({ project, onBack }) => {
         />
       )}
 
-      {viewingCitation && <ViewSourceModal citation={viewingCitation} onClose={() => setViewingCitation(null)} />}
+      {viewingCitation && <SourcePreviewModal citation={viewingCitation} onClose={() => setViewingCitation(null)} />}
     </div>
   );
 };

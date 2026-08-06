@@ -62,18 +62,24 @@ few times to confirm background work picked up.
 3. Click **Create account**. You land on the dashboard, logged in as a
    normal (non-admin) user — there is no **Admin** entry in the profile
    menu yet.
-4. In a terminal, from `ADM_2o/`:
-   ```bash
-   python scripts/promote_admin.py adm_walkthrough_user
+4. Admin is a deployment-level trust list, not a stored user field — there
+   is no promotion script or API call. Open `.env` in the repo root and
+   add your username to `ADMIN_USERNAMES` (comma-separated if there are
+   others already):
    ```
-   Expect: `'adm_walkthrough_user' is now an admin. They'll need to log in again...`
-5. Back in the browser: click your avatar (bottom-left) → **Sign Out**, then
-   sign back in with the same username/password. `is_admin` is checked
-   live against the DB on every request, never cached in the JWT, so this
-   re-login is what actually picks up the promotion.
-6. Click your avatar again — you should now see an **Admin** entry above
-   **Sign Out**. If it's missing, the promotion script didn't match a user
-   (typo in the username) — rerun it.
+   ADMIN_USERNAMES=adm_walkthrough_user
+   ```
+5. Restart the API process (Terminal 2 — `Ctrl+C`, then rerun the
+   `uvicorn` command from Part 0). This is required: `ADMIN_USERNAMES` is
+   read from `.env` at process start, and there's no file-watcher for it.
+6. Back in the browser: click your avatar (bottom-left) → **Sign Out**, then
+   sign back in with the same username/password. `is_admin` is computed
+   live from `ADMIN_USERNAMES` on every request, never cached in the JWT,
+   so this re-login is what actually picks it up.
+7. Click your avatar again — you should now see an **Admin** entry above
+   **Sign Out**. If it's missing, double-check the username in `.env`
+   matches exactly (case-sensitive) and that the API process actually
+   restarted.
 
 ---
 
@@ -290,6 +296,35 @@ contract at all), create a new skill from the same chat:
 
 ---
 
+## Part 9b — Skill versioning (create the same skill again)
+
+Skills genuinely version now — re-creating a skill_id that already exists
+lands as a new version document instead of silently overwriting the old
+one, and every part of the system (Skill Library, semantic search, a
+running contract's pinned version) resolves to "the latest version" the
+same consistent way. Prove it:
+
+1. Repeat Part 9 exactly — type `/` → **Create Skill** → same **Title**
+   (`Flag PII Columns`) and **Description** as before → **Enhance &
+   Preview** → confirm **Skill ID** is still `flag_pii_columns` → **Confirm
+   & Create**.
+2. Click **Skill Repository** in the sidebar. Find `flag_pii_columns` in
+   the list — there should be exactly **one** card for it (not two), and
+   it's the second version, not the first.
+3. To see the version number directly: open your browser's dev tools →
+   Network tab, click **Skill Repository** again to trigger a fresh `GET
+   /skills` request, and inspect the response — the `flag_pii_columns`
+   entry's `"version"` field should read `2`. (There's no version number
+   shown in the card UI itself yet — this is the one place in this
+   walkthrough that needs the network tab instead of a click-through.)
+4. This matters beyond bookkeeping: the Execution Contract for the run
+   still in progress in Part 8/10 pinned `derive_keys`/whichever skills it
+   uses at whatever version existed at Plan time — creating a new version
+   of a *different* skill here, mid-run, never affects that already-issued
+   plan. Versions are pinned per-contract at approval time, immutably.
+
+---
+
 ## Part 10 — Completion and DDL download
 
 1. Continue resolving HITL gates from Part 8 as they appear until the
@@ -396,8 +431,12 @@ purpose first and watch it actually fail.
 - A clean-boot backend creates zero documents until a real API call
   touches it (separately verified — see the startup-audit note in
   `SETUP_AND_TESTING.md` if you want to re-run that check).
-- Admin promotion, global skill upload, and the Skill Repository reading
-  those uploads back.
+- Env-var admin grant, global skill upload, and the Skill Repository
+  reading those uploads back.
+- Real skill versioning: re-creating the same skill_id lands as a new,
+  separate version instead of silently overwriting the old one, and
+  every read path (Skill Library, an in-flight contract's pinned
+  version) resolves to "latest" consistently.
 - Project creation with a real `target_platform`, reflected in the
   actual downloaded DDL's syntax (not just stored and ignored).
 - Business Standards upload, and its effect on a real Stage 1 task's
@@ -411,3 +450,20 @@ purpose first and watch it actually fail.
   and visibly fix it when corrected — proving the resolution path is
   real, not decorative — while the modeling run itself stayed entirely
   on the platform key throughout, per the documented scope boundary.
+
+## A note on failure behavior
+
+Every stage of the pipeline that can fail (the Orchestrator's own
+answers, plan-building, Stage 1-4 execution, and skill creation) now
+fails *visibly* instead of hanging. If something breaks partway through
+this walkthrough — a bad model name, an exhausted API quota, a genuinely
+malformed skill YAML — expect one of:
+- A real assistant message in the chat explaining what went wrong,
+  instead of "Thinking..." forever.
+- The Plan panel's status badge flipping to **Failed** (red), instead of
+  staying on "Running" forever with a frozen graph.
+- The Create Skill modal showing an error and returning you to the
+  compose screen, instead of "Working..." forever.
+
+None of these auto-retry — resolve the underlying issue (usually a
+Settings misconfiguration or a missing skill) and try the action again.

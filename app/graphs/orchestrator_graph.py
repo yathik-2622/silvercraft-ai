@@ -12,10 +12,13 @@ doing" as a live dropdown (node enter/exit, what it's about to fetch,
 which downstream component it hands off to, and token-by-token answer
 text) — the same shape the reference Cortex frontend already renders.
 """
+import logging
 from typing import Literal, TypedDict
 
 from langgraph.graph import StateGraph, END
 
+from app.agents.context_builder import ADM_summarize_attached_files
+from app.config import ADM_get_settings
 from app.db.vector_search import ADM_semantic_search, ADM_semantic_search_skills
 from app.core.runtime_settings import ADM_chat_completion_json_for_user, ADM_stream_chat_completion_for_user
 from app.core.reasoning_stream import (
@@ -27,6 +30,8 @@ from app.core.reasoning_stream import (
     ADM_stream_node,
     ADM_stream_token,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ADM_OrchestratorState(TypedDict, total=False):
@@ -40,6 +45,7 @@ class ADM_OrchestratorState(TypedDict, total=False):
     derive_title: bool                    # True only for a chat's first message with a still-default title
     derived_title: str | None
     tier: Literal["tier0", "tier2", "tier3"]
+    is_platform_relevant: bool             # Tier 0 topic gate — see ADM_node_extract_intent / ADM_INTENT_SYSTEM_PROMPT
     missing_info: list[str]
     response_text: str
     matched_skill: dict | None
@@ -47,6 +53,7 @@ class ADM_OrchestratorState(TypedDict, total=False):
     modeling_style: str | None
     citations: list[dict]
     create_project_prompt: dict | None    # set whenever "project" is in missing_info — see ADM_node_extract_intent
+    follow_up_questions: list[str]        # Tier 0 only — best-effort, see ADM_node_tier0_answer
 
 
 ADM_INTENT_SYSTEM_PROMPT = """You are the ADM Orchestrator's intent classifier.
@@ -73,9 +80,57 @@ customer data" or "Source analysis question". This is used as the chat's
 display name, so keep it concrete and specific to what was actually
 asked, not generic ("Data modeling help" is too vague).
 
+Also decide is_platform_relevant: true if the message relates to data
+modeling, databases/schemas, this platform's own features/skills, or is a
+meta question about using ADM — false only for something clearly
+unrelated (general trivia, unrelated technical topics, casual chit-chat).
+This is the ONLY thing that gates Tier 0's refusal behavior — it is a
+topic check, not a "did we find a matching KB chunk" check: a legitimate
+data-modeling question (e.g. "what's the difference between a fact table
+and a dimension table?") must still get a real answer even when nothing
+in the knowledge base happens to match it. Default true when unsure —
+refusing a legitimate question is worse than answering a borderline one.
+
 Return strict JSON: {"tier": "tier0"|"tier3", "modeling_style": str|null,
-"missing_info": [str, ...], "title": str, "suggested_domain": str|null}
+"missing_info": [str, ...], "title": str, "suggested_domain": str|null,
+"is_platform_relevant": bool}
 """
+
+
+ADM_TIER0_REFUSAL_MESSAGE = (
+    "That's outside what I can help with — I'm scoped to data modeling and this platform. "
+    "Ask me a data modeling question, or attach a file / point me at the knowledge base "
+    "and I can go from there."
+)
+
+
+def ADM_has_confident_kb_grounding(kb_hits: list[dict], file_refs: list[dict] | None, min_score: float | None = None) -> bool:
+    """
+    Pure decision function (unit-tested independent of any LLM call, same
+    style as ADM_parse_follow_up_questions below). NOT a refuse/answer gate
+    (see ADM_TIER0_REFUSAL_MESSAGE / is_platform_relevant for that) — this
+    only decides whether the retrieved KB material is trustworthy enough to
+    present as cited context, vs. letting the model fall back to its own
+    general data-modeling knowledge for an on-topic question with a weak or
+    empty KB match. An attached file always counts as confident grounding
+    on its own, even with zero KB hits (its schema is real, not retrieved).
+    """
+    if file_refs:
+        return True
+    if not kb_hits:
+        return False
+    threshold = min_score if min_score is not None else ADM_get_settings().SEMANTIC_SEARCH_MIN_SCORE
+    best_score = max((h.get("_score") or 0) for h in kb_hits)
+    return best_score >= threshold
+
+
+def ADM_parse_follow_up_questions(result: dict) -> list[str]:
+    """Pure extraction, unit-tested independent of the LLM call itself:
+    list-of-strings only, capped at 4, malformed/missing shape -> []."""
+    questions = result.get("questions") if isinstance(result, dict) else None
+    if not isinstance(questions, list):
+        return []
+    return [q for q in questions if isinstance(q, str)][:4]
 
 
 async def ADM_node_extract_intent(state: ADM_OrchestratorState) -> ADM_OrchestratorState:
@@ -102,6 +157,10 @@ async def ADM_node_extract_intent(state: ADM_OrchestratorState) -> ADM_Orchestra
         model=state.get("orchestrator_model"),
     )
     state["tier"] = result.get("tier", "tier3")
+    # Default True on a missing/malformed field — same "fail toward
+    # answering, not refusing" bias as the docstring above: a parsing
+    # hiccup must never silently start refusing legitimate questions.
+    state["is_platform_relevant"] = bool(result.get("is_platform_relevant", True))
     state["modeling_style"] = result.get("modeling_style")
     missing = list(result.get("missing_info", []))
     if state["tier"] == "tier3" and not has_source and "source" not in missing:
@@ -181,7 +240,13 @@ async def ADM_node_tier0_answer(state: ADM_OrchestratorState) -> ADM_Orchestrato
     # the answer-generation call a few lines below is BYOK-aware.
     await ADM_stream_fetch(chat_id, ADM_SOURCE_ORCHESTRATOR, "modeling reference material (Atlas Vector Search)")
     kb_hits = await ADM_semantic_search(state["message"], top_k=3)
-    kb_context = "\n".join(f"- {h.get('title')}: {h.get('content', '')[:300]}" for h in kb_hits)
+    # "Index small, return big": the child chunk (h["content"]) is what
+    # matched the query precisely, but when a doc was ingested with the
+    # parent_child strategy (app/core/chunking.py), its parent — larger,
+    # more context — is what actually gets shown to the LLM. Falls back to
+    # the child's own content for every other chunking strategy, which has
+    # no parent_content field at all.
+    kb_context = "\n".join(f"- {h.get('title')}: {(h.get('parent_content') or h.get('content') or '')[:600]}" for h in kb_hits)
 
     # Every chunk that fed the answer's context becomes a citation — the
     # chunk_id/source_doc_id/char_start/char_end are exactly what
@@ -200,30 +265,95 @@ async def ADM_node_tier0_answer(state: ADM_OrchestratorState) -> ADM_Orchestrato
         }
         for h in kb_hits if h.get("source_doc_id")
     ]
-    state["citations"] = citations
-    if citations:
-        await ADM_stream_citations(chat_id, ADM_SOURCE_ORCHESTRATOR, citations)
+    # Previously: a file attached to this message was invisible to Tier 0 —
+    # ADM_node_extract_intent only ever checked bool(file_refs) to gate
+    # missing_info, and this node never looked at it at all, so "what
+    # columns does this have?" got answered by a model with no idea a file
+    # existed. Schema/stats only (never row content), same privacy boundary
+    # Tier 3 already uses via ADM__resolve_source_refs.
+    attached_files_summary = await ADM_summarize_attached_files(state.get("file_refs") or [], chat_id, ADM_SOURCE_ORCHESTRATOR)
+    file_context_block = f"\n\nAttached file(s) (schema/stats only):\n{attached_files_summary}" if attached_files_summary else ""
 
-    await ADM_stream_log(chat_id, ADM_SOURCE_ORCHESTRATOR, "Streaming answer...")
-    answer_prompt = (
-        f"User question: {state['message']}\n\n"
-        f"Relevant modeling reference material:\n{kb_context}\n\n"
-        f"Answer the question conversationally and concisely, in plain prose (no JSON)."
+    # Topic gate (item 4: "tied to data modeling only"): refuse ONLY when
+    # ADM_node_extract_intent classified the message itself as off-topic —
+    # not when the KB simply has no matching chunk. A thin/empty KB must
+    # never turn a legitimate data-modeling question ("fact vs. dimension
+    # table?") into a refusal; it should just answer from general
+    # data-modeling knowledge with no citations. Confirmed live: gating
+    # this on KB-hit score instead (mirroring hckb's pure-KB-chatbot
+    # behavior too literally) broke exactly that case — hckb has no
+    # general-knowledge fallback at all, ADM's orchestrator does by design.
+    is_relevant = state.get("is_platform_relevant", True)
+    # Separate concern: is the retrieved KB material trustworthy enough to
+    # present as cited context, vs. letting the model answer from its own
+    # general knowledge? Only affects whether kb_context/citations are
+    # used below — never the refuse/answer decision itself.
+    kb_confident = ADM_has_confident_kb_grounding(kb_hits, state.get("file_refs"))
+    logger.info(
+        "Tier0 gate: is_platform_relevant=%s, best_kb_score=%s, file_refs=%d, kb_confident=%s",
+        is_relevant, max((h.get("_score") or 0) for h in kb_hits) if kb_hits else None,
+        len(state.get("file_refs") or []), kb_confident,
     )
-    full_answer = ""
-    # --- BYOK divergence point (see ADM_node_extract_intent above for the
-    # full explanation) — this is the Orchestrator's other LLM call site,
-    # so it's the other place that resolves the sending user's own
-    # provider/key instead of the platform's cached client.
-    async for delta in ADM_stream_chat_completion_for_user(
-        [{"role": "system", "content": "You are the ADM Orchestrator answering a how-to question."},
-         {"role": "user", "content": answer_prompt}],
-        user_id=state.get("user_id"),
-        model=state.get("orchestrator_model"),
-    ):
-        full_answer += delta
-        await ADM_stream_token(chat_id, ADM_SOURCE_ORCHESTRATOR, delta)
-    state["response_text"] = full_answer
+
+    if not is_relevant:
+        await ADM_stream_log(chat_id, ADM_SOURCE_ORCHESTRATOR, "Message classified as outside the data-modeling/platform domain — refusing rather than answering off-topic.")
+        state["citations"] = []
+        state["response_text"] = ADM_TIER0_REFUSAL_MESSAGE
+        state["follow_up_questions"] = []
+        await ADM_stream_token(chat_id, ADM_SOURCE_ORCHESTRATOR, ADM_TIER0_REFUSAL_MESSAGE)
+    else:
+        state["citations"] = citations if kb_confident else []
+        if state["citations"]:
+            await ADM_stream_citations(chat_id, ADM_SOURCE_ORCHESTRATOR, state["citations"])
+
+        await ADM_stream_log(chat_id, ADM_SOURCE_ORCHESTRATOR, "Streaming answer...")
+        # Only feed kb_context to the prompt when it's confident (above
+        # threshold) — a weak/irrelevant top hit must not be presented as
+        # "relevant material" and risk misleading the answer, even though
+        # we're still allowed to answer from general knowledge here.
+        kb_material_block = f"Relevant modeling reference material:\n{kb_context}" if kb_confident else "(No confident knowledge-base match for this question — answer from general data-modeling expertise instead.)"
+        answer_prompt = (
+            f"User question: {state['message']}\n\n"
+            f"{kb_material_block}"
+            f"{file_context_block}\n\n"
+            f"Answer using the material above when confident/present, plus general "
+            f"data-modeling domain knowledge otherwise — this platform answers data "
+            f"modeling questions, not general-purpose ones, regardless of which modeling "
+            f"style is in play. Answer conversationally and concisely, in plain prose (no JSON)."
+        )
+        full_answer = ""
+        # --- BYOK divergence point (see ADM_node_extract_intent above for the
+        # full explanation) — this is the Orchestrator's other LLM call site,
+        # so it's the other place that resolves the sending user's own
+        # provider/key instead of the platform's cached client.
+        async for delta in ADM_stream_chat_completion_for_user(
+            [{"role": "system", "content": "You are the ADM Orchestrator, a data-modeling-platform assistant answering a how-to question. Stay scoped to data modeling and this platform's knowledge base/attached files."},
+             {"role": "user", "content": answer_prompt}],
+            user_id=state.get("user_id"),
+            model=state.get("orchestrator_model"),
+        ):
+            full_answer += delta
+            await ADM_stream_token(chat_id, ADM_SOURCE_ORCHESTRATOR, delta)
+        state["response_text"] = full_answer
+
+        # Best-effort follow-up-question suggestions for the assistant bubble's
+        # follow-up chips — a small separate non-streaming call so it never
+        # blocks or interleaves with the answer text the user is already
+        # watching stream in. Same BYOK divergence point as the two calls
+        # above/below (ADM_chat_completion_json_for_user resolves the sending
+        # user's own provider/key). Never allowed to fail the whole turn.
+        state["follow_up_questions"] = []
+        try:
+            followup_result = await ADM_chat_completion_json_for_user(
+                [
+                    {"role": "system", "content": 'Output strict JSON: {"questions": [2-4 short natural follow-up questions the user might ask next]}.'},
+                    {"role": "user", "content": f"Question: {state['message']}\nAnswer: {full_answer[:1000]}"},
+                ],
+                user_id=state.get("user_id"), model=state.get("orchestrator_model"),
+            )
+            state["follow_up_questions"] = ADM_parse_follow_up_questions(followup_result)
+        except Exception:
+            pass  # best-effort — the main answer already succeeded, never retroactively fail it over this
 
     # Real semantic search over the skills catalog (skills are embedded on
     # write — app.db.vector_search.ADM_embed_and_store_skill) — supersedes

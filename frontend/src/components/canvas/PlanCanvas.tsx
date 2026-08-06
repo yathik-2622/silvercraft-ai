@@ -1,13 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import ReactFlow, { Background, Controls, MarkerType, type Edge, type Node, type ReactFlowInstance } from "reactflow";
 import "reactflow/dist/style.css";
-import { CheckCircle2, Rocket } from "lucide-react";
+import { CheckCircle2, ListTree, Rocket, Workflow } from "lucide-react";
 import { contractsApi } from "../../api/client";
 import type { ExecutionContract, PlannedTask, RunState } from "../../types";
 import { TaskNode, type TaskNodeData } from "./TaskNode";
 import { TaskDetailPanel } from "./TaskDetailPanel";
 import { PlanCommentsPanel } from "./PlanCommentsPanel";
 import { ContractCompletionPanel } from "./ContractCompletionPanel";
+import { PlanMarkdownView } from "./PlanMarkdownView";
 
 interface Props {
   contractId: string;
@@ -72,6 +73,7 @@ export const PlanCanvas: React.FC<Props> = ({ contractId }) => {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isApproving, setIsApproving] = useState(false);
+  const [viewMode, setViewMode] = useState<"graph" | "plan">("graph");
   const reactFlowRef = useRef<ReactFlowInstance | null>(null);
 
   const refresh = () => {
@@ -145,6 +147,26 @@ export const PlanCanvas: React.FC<Props> = ({ contractId }) => {
         <div className="flex items-center gap-2">
           <h3 className="font-bold text-sm text-slate-800">Plan</h3>
           <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${status.className}`}>{status.label}</span>
+          <div className="flex items-center gap-0.5 bg-white border border-slate-200 rounded-lg p-0.5 ml-1">
+            <button
+              onClick={() => setViewMode("graph")}
+              title="Graph view"
+              className={`p-1.5 rounded-md cursor-pointer transition-colors ${
+                viewMode === "graph" ? "bg-brand-orange text-white" : "text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+              }`}
+            >
+              <Workflow className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={() => setViewMode("plan")}
+              title="Plan view"
+              className={`p-1.5 rounded-md cursor-pointer transition-colors ${
+                viewMode === "plan" ? "bg-brand-orange text-white" : "text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+              }`}
+            >
+              <ListTree className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
         {contract.status === "draft" && (
           <button
@@ -164,6 +186,11 @@ export const PlanCanvas: React.FC<Props> = ({ contractId }) => {
         )}
       </div>
 
+      {viewMode === "plan" ? (
+        <div className="flex-1 min-h-0">
+          <PlanMarkdownView contract={contract} onCommentAdded={refresh} />
+        </div>
+      ) : (
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-3 min-h-0">
         <div className="lg:col-span-2 relative min-h-[260px]">
           {Object.keys(contract.stages)
@@ -218,6 +245,7 @@ export const PlanCanvas: React.FC<Props> = ({ contractId }) => {
           <PlanCommentsPanel contractId={contract.contract_id} comments={contract.comments} onCommentAdded={refresh} />
         </div>
       </div>
+      )}
 
       {contract.status === "completed" && <ContractCompletionPanel contractId={contract.contract_id} />}
     </div>

@@ -194,6 +194,9 @@ async def ADM_run_task_worker(
         f"Task-specific context:\n{json.dumps(task_context, default=str)[:4000]}\n\n"
         f"Input payload (structural/aggregate metadata only, per ADM privacy policy):\n"
         f"{json.dumps(input_payload, default=str)[:6000]}\n\n"
+        f"If 'user_instructions' is present in the input payload, treat it as a direct "
+        f"override from the user for THIS task specifically — prioritize it over your own "
+        f"default judgment.\n\n"
         f"Produce the expected output as strict JSON with keys: "
         f"'output' (the task's result object) and 'confidence' (0.0-1.0 float, "
         f"your self-assessed confidence in this result)."
@@ -218,7 +221,7 @@ async def ADM_run_task_worker(
 
         elif kind == "on_tool_end":
             output = event["data"].get("output")
-            await ADM_stream_tool_end(chat_id, source, event["name"], str(output))
+            await ADM_stream_tool_end(chat_id, source, event["name"], output)
 
         elif kind == "on_chat_model_stream":
             chunk = event["data"].get("chunk")

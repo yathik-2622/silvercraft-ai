@@ -11,16 +11,32 @@ wasn't actually possible from its output. Every strategy here goes through
 the same offset-tracking wrapper, so whichever one the admin picks, the
 citation-highlighting contract stays the same.
 """
+import logging
+
 from langchain_text_splitters import RecursiveCharacterTextSplitter, MarkdownTextSplitter, TokenTextSplitter
 
 from app.config import ADM_get_settings
+
+logger = logging.getLogger(__name__)
 
 ADM_CHUNKING_STRATEGIES = {
     "markdown": "Markdown-aware — splits on headings first, then paragraphs. Best default for modeling reference docs.",
     "recursive": "General-purpose recursive splitter — paragraph, then sentence, then word boundaries. Good for plain text/Word docs.",
     "sliding_window": "Fixed-size token window with overlap — most predictable chunk size, best for very uniform/dense text.",
     "page_aware": "Groups content by page/slide boundary where the source format has one (PDF, PPTX) before falling back to size-based splitting.",
+    "parent_child": "Two-tier — large parent chunks carry full context to the LLM, small child chunks are what gets embedded/matched on. Best for long, dense documents where a single chunk size trades off recall against context.",
 }
+
+# Child chunks are what gets embedded/matched (small -> precise retrieval);
+# parent chunks are what the LLM actually sees once a child matches (large
+# -> full context) — the "index small, return big" pattern from 2026 RAG
+# best practice (LangChain's ParentDocumentRetriever). Sized in this
+# codebase's existing character-based convention (KB_CHUNK_SIZE=1500 is
+# roughly mid-way between these two tiers).
+ADM_PARENT_CHUNK_SIZE = 2000
+ADM_PARENT_CHUNK_OVERLAP = 200
+ADM_CHILD_CHUNK_SIZE = 400
+ADM_CHILD_CHUNK_OVERLAP = 50
 
 
 def ADM_chunk_text_with_offsets(
@@ -41,8 +57,60 @@ def ADM_chunk_text_with_offsets(
     if not text or not text.strip():
         return []
 
+    if strategy == "parent_child":
+        chunks = ADM_chunk_parent_child(text)
+        logger.info("Chunked text: strategy=parent_child children=%d chars=%d", len(chunks), len(text))
+        return chunks
+
     raw_chunks = ADM_split_by_strategy(text, strategy, size, overlap)
-    return ADM_attach_offsets(text, raw_chunks, overlap)
+    chunks = ADM_attach_offsets(text, raw_chunks, overlap)
+    logger.info("Chunked text: strategy=%s chunks=%d chars=%d", strategy, len(chunks), len(text))
+    return chunks
+
+
+def ADM_chunk_parent_child(text: str) -> list[dict]:
+    """
+    Two-tier "small-to-big" chunking. Parents are split first (large, for
+    LLM context) and offset-tracked the normal way via ADM_attach_offsets;
+    each parent is then re-split into children (small, what actually gets
+    embedded). Returns one dict PER CHILD — citation highlighting still
+    works unchanged (each child's char_start/char_end are real offsets
+    into the ORIGINAL text, computed relative to its parent's already-
+    known offset), plus two extra fields every other strategy's output
+    doesn't have: parent_chunk_index (which parent this child belongs to)
+    and parent_content (the parent's full text, for retrieval-time context
+    expansion — see app/db/vector_search.py::ADM_upsert_modeling_reference_chunks).
+    """
+    parent_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=ADM_PARENT_CHUNK_SIZE, chunk_overlap=ADM_PARENT_CHUNK_OVERLAP,
+        separators=["\n\n", "\n", ". ", " ", ""],
+    )
+    parents = ADM_attach_offsets(text, parent_splitter.split_text(text), ADM_PARENT_CHUNK_OVERLAP)
+
+    child_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=ADM_CHILD_CHUNK_SIZE, chunk_overlap=ADM_CHILD_CHUNK_OVERLAP,
+        separators=["\n\n", "\n", ". ", " ", ""],
+    )
+    children: list[dict] = []
+    for parent in parents:
+        child_texts = child_splitter.split_text(parent["content"]) or [parent["content"]]
+        search_from = 0
+        for child_text in child_texts:
+            offset_in_parent = parent["content"].find(child_text, search_from)
+            if offset_in_parent == -1:
+                offset_in_parent = search_from  # same normalized-whitespace fallback as ADM_attach_offsets
+            char_start = parent["char_start"] + offset_in_parent
+            char_end = char_start + len(child_text)
+            children.append({
+                "chunk_index": len(children),
+                "content": child_text,
+                "char_start": char_start,
+                "char_end": char_end,
+                "parent_chunk_index": parent["chunk_index"],
+                "parent_content": parent["content"],
+            })
+            search_from = max(0, offset_in_parent + len(child_text) - ADM_CHILD_CHUNK_OVERLAP)
+    return children
 
 
 def ADM_split_by_strategy(text: str, strategy: str, size: int, overlap: int) -> list[str]:

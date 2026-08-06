@@ -1,11 +1,11 @@
 import React, { useEffect, useRef, useState } from "react";
-import { AlertCircle, CheckCircle2, FileText, Loader2, ShieldCheck, Sparkles, Trash2, Upload } from "lucide-react";
-import { adminApi, projectsApi } from "../api/client";
-import type { AdminKbConfig, KbDocument, Project } from "../types";
+import { AlertCircle, CheckCircle2, Loader2, Sparkles, Trash2, Upload, X } from "lucide-react";
+import { adminApi } from "../api/client";
+import { ConfirmModal } from "../components/ConfirmModal";
+import type { AdminKbConfig, KbDocument } from "../types";
 
-const MODELING_EXTENSIONS = ".md,.txt,.pdf,.docx,.pptx";
+const MODELING_EXTENSIONS = ".md,.txt,.pdf,.docx,.pptx,.csv,.xlsx";
 const SKILL_EXTENSIONS = ".yaml,.yml,.md,.txt,.pdf,.docx,.pptx";
-const BUSINESS_STANDARDS_EXTENSIONS = ".md,.txt,.pdf,.docx,.pptx";
 
 const STATUS_BADGE: Record<string, string> = {
   processing: "bg-amber-100 text-amber-700 border-amber-200",
@@ -13,30 +13,58 @@ const STATUS_BADGE: Record<string, string> = {
   failed: "bg-rose-100 text-rose-700 border-rose-200",
 };
 
+function addUniqueFiles(prev: File[], incoming: FileList | null): File[] {
+  if (!incoming) return prev;
+  const merged = [...prev];
+  for (const f of Array.from(incoming)) {
+    const isDupe = merged.some((m) => m.name === f.name && m.size === f.size && m.lastModified === f.lastModified);
+    if (!isDupe) merged.push(f);
+  }
+  return merged;
+}
+
+function FileChipList({ files, onRemove }: { files: File[]; onRemove: (idx: number) => void }) {
+  if (files.length === 0) return null;
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {files.map((f, idx) => (
+        <span
+          key={`${f.name}-${f.lastModified}-${idx}`}
+          className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200 font-bold text-[10px]"
+        >
+          {f.name}
+          <button
+            type="button"
+            onClick={() => onRemove(idx)}
+            className="hover:bg-emerald-200 rounded p-0.5 cursor-pointer"
+            title="Remove"
+          >
+            <X className="w-2.5 h-2.5" />
+          </button>
+        </span>
+      ))}
+    </div>
+  );
+}
+
 export const AdminPage: React.FC = () => {
   const [config, setConfig] = useState<AdminKbConfig | null>(null);
   const [documents, setDocuments] = useState<KbDocument[] | null>(null);
-  const [defaultProjectId, setDefaultProjectId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  const [modelingFile, setModelingFile] = useState<File | null>(null);
+  const [modelingFiles, setModelingFiles] = useState<File[]>([]);
   const [modelingTitle, setModelingTitle] = useState("");
   const [chunkingStrategy, setChunkingStrategy] = useState("markdown");
   const [modelingStatus, setModelingStatus] = useState<string | null>(null);
   const [modelingError, setModelingError] = useState<string | null>(null);
   const modelingFileInputRef = useRef<HTMLInputElement>(null);
 
-  const [skillFile, setSkillFile] = useState<File | null>(null);
+  const [skillFiles, setSkillFiles] = useState<File[]>([]);
   const [skillStatus, setSkillStatus] = useState<string | null>(null);
   const [skillError, setSkillError] = useState<string | null>(null);
   const skillFileInputRef = useRef<HTMLInputElement>(null);
 
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [bsProjectId, setBsProjectId] = useState("");
-  const [bsFile, setBsFile] = useState<File | null>(null);
-  const [bsStatus, setBsStatus] = useState<string | null>(null);
-  const [bsError, setBsError] = useState<string | null>(null);
-  const bsFileInputRef = useRef<HTMLInputElement>(null);
+  const [deletingDocId, setDeletingDocId] = useState<string | null>(null);
 
   const loadDocuments = () => {
     adminApi
@@ -47,17 +75,6 @@ export const AdminPage: React.FC = () => {
 
   useEffect(() => {
     adminApi.getKbConfig().then(setConfig).catch(() => {});
-    projectsApi.list("owned").then((projects) => setDefaultProjectId(projects[0]?.project_id ?? null)).catch(() => {});
-    // "all" (not "owned") — admin uploads are platform-authoritative
-    // regardless of who owns the target project, same as the skill-upload
-    // path forcing scope=global regardless of a YAML's own scope field.
-    projectsApi
-      .list("all")
-      .then((all) => {
-        setProjects(all);
-        setBsProjectId((prev) => prev || all[0]?.project_id || "");
-      })
-      .catch(() => {});
     loadDocuments();
   }, []);
 
@@ -69,16 +86,26 @@ export const AdminPage: React.FC = () => {
 
   const handleUploadModeling = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!modelingFile || !modelingTitle.trim()) {
-      setModelingError("A file and title are both required.");
+    if (modelingFiles.length === 0) {
+      setModelingError("Choose at least one file first.");
       return;
     }
     setModelingError(null);
     setModelingStatus("Uploading...");
     try {
-      const result = await adminApi.uploadModeling(modelingFile, modelingTitle.trim(), chunkingStrategy);
-      setModelingStatus(`Processing (${result.char_length} characters, ${result.chunking_strategy} strategy)...`);
-      setModelingFile(null);
+      const result = await adminApi.uploadModeling(modelingFiles, modelingTitle.trim(), chunkingStrategy);
+      const dupCount = result.results.filter((r) => r.status === "duplicate").length;
+      const errCount = result.results.filter((r) => r.status === "error").length;
+      const okCount = result.results.length - dupCount - errCount;
+      setModelingStatus(
+        `Uploaded ${okCount}/${result.results.length} file(s), processing (${chunkingStrategy} strategy)...` +
+          (dupCount > 0 ? ` ${dupCount} already existed (skipped) — see below.` : "") +
+          (errCount > 0 ? ` ${errCount} failed — see below.` : ""),
+      );
+      const failedNames = result.results.filter((r) => r.status === "error").map((r) => `${r.filename}: ${r.error}`);
+      const dupNames = result.results.filter((r) => r.status === "duplicate").map((r) => `${r.filename}: ${r.note}`);
+      if (failedNames.length > 0 || dupNames.length > 0) setModelingError([...dupNames, ...failedNames].join("; "));
+      setModelingFiles([]);
       setModelingTitle("");
       if (modelingFileInputRef.current) modelingFileInputRef.current.value = "";
       loadDocuments();
@@ -90,20 +117,21 @@ export const AdminPage: React.FC = () => {
 
   const handleUploadSkill = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!skillFile) {
-      setSkillError("Choose a file first.");
+    if (skillFiles.length === 0) {
+      setSkillError("Choose at least one file first.");
       return;
     }
     setSkillError(null);
     setSkillStatus("Uploading...");
     try {
-      const result = await adminApi.uploadSkill(skillFile, defaultProjectId || undefined);
-      setSkillStatus(
-        result.status === "uploaded"
-          ? `Uploaded directly: ${result.skill_id} (${result.kind}) at scope=global.${result.note ? ` ${result.note}` : ""}`
-          : `Sent to the Skill Normalizer — draft ${result.draft_id}. ${result.note || ""}`,
-      );
-      setSkillFile(null);
+      const result = await adminApi.uploadSkill(skillFiles);
+      const lines = result.results.map((r) => {
+        if (r.status === "uploaded") return `${r.filename}: uploaded (${r.skill_id}, ${r.kind}) at scope=global`;
+        if (r.status === "accepted") return `${r.filename}: sent to the Skill Normalizer — draft ${r.draft_id}`;
+        return `${r.filename}: ${r.error ?? "failed"}`;
+      });
+      setSkillStatus(lines.join(" · "));
+      setSkillFiles([]);
       if (skillFileInputRef.current) skillFileInputRef.current.value = "";
     } catch (err) {
       setSkillError(err instanceof Error ? err.message : "Upload failed.");
@@ -111,32 +139,14 @@ export const AdminPage: React.FC = () => {
     }
   };
 
-  const handleUploadBusinessStandards = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!bsFile || !bsProjectId) {
-      setBsError("A project and a file are both required.");
-      return;
-    }
-    setBsError(null);
-    setBsStatus("Uploading...");
-    try {
-      const result = await adminApi.uploadBusinessStandards(bsFile, bsProjectId);
-      setBsStatus(`Saved (${result.char_length} characters) as the business standards for this project.`);
-      setBsFile(null);
-      if (bsFileInputRef.current) bsFileInputRef.current.value = "";
-    } catch (err) {
-      setBsError(err instanceof Error ? err.message : "Upload failed.");
-      setBsStatus(null);
-    }
-  };
-
   const handleDelete = async (docId: string) => {
-    if (!window.confirm("Delete this document and all its embedded chunks?")) return;
     try {
       await adminApi.deleteDocument(docId);
       loadDocuments();
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : "Failed to delete document.");
+    } finally {
+      setDeletingDocId(null);
     }
   };
 
@@ -146,20 +156,23 @@ export const AdminPage: React.FC = () => {
         <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-2xs space-y-2">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-brand-orange-light text-brand-orange flex items-center justify-center border border-brand-orange/20 shrink-0">
-              <ShieldCheck className="w-5.5 h-5.5" />
+              <Sparkles className="w-5.5 h-5.5" />
             </div>
-            <h1 className="text-xl md:text-2xl font-black text-slate-900 tracking-tight">Admin — Knowledge Base</h1>
+            <h1 className="text-xl md:text-2xl font-black text-slate-900 tracking-tight">Upload — Knowledge Base</h1>
           </div>
           <p className="text-xs text-slate-600 max-w-2xl leading-relaxed font-medium sm:pl-13">
-            Modeling reference documents (chunked + embedded for citations) and global skill uploads.
+            Modeling reference documents (chunked + embedded for citations) and global skill uploads. Business
+            Standards moved to project creation/settings — each project's owner manages their own.
           </p>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <form onSubmit={handleUploadModeling} className="bg-white border border-slate-200 rounded-2xl p-4 space-y-3 text-xs shadow-2xs">
             <h3 className="font-extrabold text-sm text-slate-900">Upload Modeling Reference</h3>
             <div>
-              <label className="text-[11px] font-bold text-slate-700 block mb-1">Title</label>
+              <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                Title <span className="font-normal text-slate-400">(optional — applied to every file; leave blank to use each filename)</span>
+              </label>
               <input
                 value={modelingTitle}
                 onChange={(e) => setModelingTitle(e.target.value)}
@@ -181,15 +194,17 @@ export const AdminPage: React.FC = () => {
                 ))}
               </select>
             </div>
-            <div>
-              <label className="text-[11px] font-bold text-slate-700 block mb-1">File ({MODELING_EXTENSIONS})</label>
+            <div className="space-y-1.5">
+              <label className="text-[11px] font-bold text-slate-700 block">Files ({MODELING_EXTENSIONS})</label>
               <input
                 ref={modelingFileInputRef}
                 type="file"
+                multiple
                 accept={MODELING_EXTENSIONS}
-                onChange={(e) => setModelingFile(e.target.files?.[0] || null)}
+                onChange={(e) => setModelingFiles((prev) => addUniqueFiles(prev, e.target.files))}
                 className="w-full text-[11px] text-slate-600 file:mr-2 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:bg-brand-orange-light file:text-brand-orange file:font-bold file:cursor-pointer"
               />
+              <FileChipList files={modelingFiles} onRemove={(idx) => setModelingFiles((prev) => prev.filter((_, i) => i !== idx))} />
             </div>
             {modelingError && (
               <div className="text-[11px] font-semibold text-rose-600 bg-rose-50 border border-rose-200 rounded-xl px-3 py-2">
@@ -206,7 +221,7 @@ export const AdminPage: React.FC = () => {
               className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-brand-orange hover:bg-brand-orange-hover text-white font-bold text-xs shadow-2xs cursor-pointer"
             >
               <Upload className="w-3.5 h-3.5" />
-              Upload
+              Upload {modelingFiles.length > 1 ? `${modelingFiles.length} files` : ""}
             </button>
           </form>
 
@@ -216,15 +231,17 @@ export const AdminPage: React.FC = () => {
               A <span className="font-mono">.yaml</span>/<span className="font-mono">.yml</span> file is parsed directly at
               scope=global. Any other format goes through the Skill Normalizer, also landing at scope=global once approved.
             </p>
-            <div>
-              <label className="text-[11px] font-bold text-slate-700 block mb-1">File ({SKILL_EXTENSIONS})</label>
+            <div className="space-y-1.5">
+              <label className="text-[11px] font-bold text-slate-700 block">Files ({SKILL_EXTENSIONS})</label>
               <input
                 ref={skillFileInputRef}
                 type="file"
+                multiple
                 accept={SKILL_EXTENSIONS}
-                onChange={(e) => setSkillFile(e.target.files?.[0] || null)}
+                onChange={(e) => setSkillFiles((prev) => addUniqueFiles(prev, e.target.files))}
                 className="w-full text-[11px] text-slate-600 file:mr-2 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:bg-brand-orange-light file:text-brand-orange file:font-bold file:cursor-pointer"
               />
+              <FileChipList files={skillFiles} onRemove={(idx) => setSkillFiles((prev) => prev.filter((_, i) => i !== idx))} />
             </div>
             {skillError && (
               <div className="text-[11px] font-semibold text-rose-600 bg-rose-50 border border-rose-200 rounded-xl px-3 py-2">
@@ -241,58 +258,7 @@ export const AdminPage: React.FC = () => {
               className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-brand-orange hover:bg-brand-orange-hover text-white font-bold text-xs shadow-2xs cursor-pointer"
             >
               <Sparkles className="w-3.5 h-3.5" />
-              Upload
-            </button>
-          </form>
-
-          <form onSubmit={handleUploadBusinessStandards} className="bg-white border border-slate-200 rounded-2xl p-4 space-y-3 text-xs shadow-2xs">
-            <h3 className="font-extrabold text-sm text-slate-900">Upload Business Standards</h3>
-            <p className="text-slate-500">
-              Project-scoped rules/standards text, stored whole as run-invariant context for that project's
-              modeling runs — not chunked, not embedded, not searchable. Re-uploading for the same project
-              replaces the prior document.
-            </p>
-            <div>
-              <label className="text-[11px] font-bold text-slate-700 block mb-1">Project</label>
-              <select
-                value={bsProjectId}
-                onChange={(e) => setBsProjectId(e.target.value)}
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-orange/30 cursor-pointer"
-              >
-                {projects.length === 0 && <option value="">No projects available</option>}
-                {projects.map((p) => (
-                  <option key={p.project_id} value={p.project_id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="text-[11px] font-bold text-slate-700 block mb-1">File ({BUSINESS_STANDARDS_EXTENSIONS})</label>
-              <input
-                ref={bsFileInputRef}
-                type="file"
-                accept={BUSINESS_STANDARDS_EXTENSIONS}
-                onChange={(e) => setBsFile(e.target.files?.[0] || null)}
-                className="w-full text-[11px] text-slate-600 file:mr-2 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:bg-brand-orange-light file:text-brand-orange file:font-bold file:cursor-pointer"
-              />
-            </div>
-            {bsError && (
-              <div className="text-[11px] font-semibold text-rose-600 bg-rose-50 border border-rose-200 rounded-xl px-3 py-2">
-                {bsError}
-              </div>
-            )}
-            {bsStatus && (
-              <div className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2">
-                {bsStatus}
-              </div>
-            )}
-            <button
-              type="submit"
-              className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-brand-orange hover:bg-brand-orange-hover text-white font-bold text-xs shadow-2xs cursor-pointer"
-            >
-              <FileText className="w-3.5 h-3.5" />
-              Upload
+              Upload {skillFiles.length > 1 ? `${skillFiles.length} files` : ""}
             </button>
           </form>
         </div>
@@ -328,7 +294,7 @@ export const AdminPage: React.FC = () => {
                       {doc.status}
                     </span>
                     <button
-                      onClick={() => handleDelete(doc.doc_id)}
+                      onClick={() => setDeletingDocId(doc.doc_id)}
                       className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer"
                       title="Delete"
                     >
@@ -341,6 +307,17 @@ export const AdminPage: React.FC = () => {
           )}
         </div>
       </main>
+
+      {deletingDocId && (
+        <ConfirmModal
+          title="Delete document?"
+          message="This removes the document and all its embedded chunks. This can't be undone."
+          confirmLabel="Delete"
+          destructive
+          onConfirm={() => handleDelete(deletingDocId)}
+          onCancel={() => setDeletingDocId(null)}
+        />
+      )}
     </div>
   );
 };

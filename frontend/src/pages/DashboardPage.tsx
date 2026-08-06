@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import {
   Building2,
   Database,
+  FileText,
   FolderKanban,
   FolderPlus,
   Lock,
@@ -20,6 +21,7 @@ import { useAuth } from "../auth/AuthContext";
 import { useWorkspace } from "../workspace/WorkspaceContext";
 import { CreateProjectCanvas } from "./CreateProjectCanvas";
 import { EditProjectModal } from "../components/EditProjectModal";
+import { BusinessStandardsModal } from "../components/BusinessStandardsModal";
 
 type CanvasMode = "list" | "create";
 
@@ -53,6 +55,7 @@ export const DashboardPage: React.FC = () => {
   const [editingProject, setEditingProject] = useState<Project | null>(null);
   const [deletingProject, setDeletingProject] = useState<Project | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [previewingStandardsFor, setPreviewingStandardsFor] = useState<Project | null>(null);
 
   const loadProjects = () => {
     setLoadError(null);
@@ -303,6 +306,16 @@ export const DashboardPage: React.FC = () => {
                     <span className="text-[9px] font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200 uppercase inline-block">
                       {LAYER_LABEL[proj.layer] || proj.layer}
                     </span>
+                    {proj.has_business_standards && (
+                      <button
+                        onClick={() => setPreviewingStandardsFor(proj)}
+                        className="ml-1.5 text-[9px] font-bold px-2 py-0.5 rounded bg-purple-50 text-purple-700 border border-purple-200 uppercase inline-flex items-center gap-1 cursor-pointer hover:bg-purple-100 transition-colors"
+                        title="View Business Standards"
+                      >
+                        <FileText className="w-2.5 h-2.5" />
+                        Business Standards
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -331,6 +344,14 @@ export const DashboardPage: React.FC = () => {
 
       {editingProject && (
         <EditProjectModal project={editingProject} onClose={() => setEditingProject(null)} onSaved={loadProjects} />
+      )}
+
+      {previewingStandardsFor && (
+        <BusinessStandardsModal
+          project={previewingStandardsFor}
+          onClose={() => setPreviewingStandardsFor(null)}
+          onSaved={loadProjects}
+        />
       )}
 
       {deletingProject && (

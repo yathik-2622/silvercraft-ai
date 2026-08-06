@@ -108,16 +108,20 @@ Postman, or from `curl`.
 
 ## 6. Register + become admin
 
+Admin is a deployment-level trust list (`ADMIN_USERNAMES` in `.env`), not a
+stored user field — there's no promotion script or API call.
+
 1. `/docs` → `POST /auth/register` → `{"username": "you", "password": "..."}`
    → copy the returned `access_token`.
 2. Click **Authorize** (top right of `/docs`) → paste the token.
-3. In a terminal:
-   ```bash
-   python scripts/promote_admin.py you
+3. Add your username to `.env`:
    ```
-4. Log in again (`POST /auth/login`) — `is_admin` is checked live against
-   the DB on every request, never cached in the token, so a stale token
-   from before promotion won't show it.
+   ADMIN_USERNAMES=you
+   ```
+   (comma-separated if you want more than one admin) and restart uvicorn.
+4. Log in again (`POST /auth/login`) — `is_admin` is computed live from
+   `ADMIN_USERNAMES` on every request, never cached in the token, so a
+   stale token from before the restart won't show it.
 
 ## 7. Upload the sample skill catalog (proves admin YAML path + global scope)
 

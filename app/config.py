@@ -31,9 +31,26 @@ class ADM_Settings(BaseSettings):
     # Local artifact storage (Blob Storage replacement)
     ARTIFACT_STORAGE_DIR: str = "./local_blob_storage"
 
+    # Excel profiling engine choice (app/tools/upload_ingestion.py) — files
+    # at or under this size use Polars (pl.read_excel, Calamine/Rust engine
+    # via `fastexcel` — much faster than openpyxl for typical spreadsheets).
+    # Above it, openpyxl's read_only row-cursor stays the path: Polars'
+    # read_excel is not a true streaming reader (it materializes the whole
+    # sheet), so past this size openpyxl's bounded-memory streaming is the
+    # safer choice, not a strictly-worse one — a deliberate hybrid, not an
+    # unconditional swap (see app/tools/upload_ingestion.py module docstring).
+    EXCEL_POLARS_MAX_MB: float = 25.0
+
     # Knowledge Base ingestion — chunking (admin upload pipeline)
     KB_CHUNK_SIZE: int = 1500          # characters, not tokens — see app/core/chunking.py
     KB_CHUNK_OVERLAP: int = 200
+
+    # Tier 0 grounding gate (app/graphs/orchestrator_graph.py,
+    # ADM_has_sufficient_grounding) — below this cosine-similarity score on
+    # the best KB hit, and with no file attached, Tier 0 refuses/redirects
+    # instead of answering ungrounded. Matches the threshold hckb's own
+    # RAG chat mode uses (HC_CHAT_RAG_SIMILARITY_THRESHOLD, default 0.6).
+    SEMANTIC_SEARCH_MIN_SCORE: float = 0.6
 
     ENV: str = "local"
     LOG_LEVEL: str = "INFO"

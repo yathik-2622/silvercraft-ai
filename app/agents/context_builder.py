@@ -8,10 +8,19 @@ Every fetch here is announced live via app.core.reasoning_stream BEFORE
 it runs (chat_id/source are optional — callers outside a live chat run,
 e.g. tests or scripts, simply omit them and get silent behavior).
 """
+import logging
+
 from app.core.reasoning_stream import ADM_SOURCE_CONTEXT_BUILDER, ADM_stream_fetch, ADM_stream_log
 from app.db.mongo_client import ADM_get_db
-from app.db.collections import ADM_COLLECTION_BUSINESS_STANDARDS, ADM_COLLECTION_PROJECTS, ADM_COLLECTION_SKILLS
+from app.db.collections import (
+    ADM_COLLECTION_BUSINESS_STANDARDS,
+    ADM_COLLECTION_PROJECTS,
+    ADM_COLLECTION_RAW_FILES,
+    ADM_COLLECTION_SKILLS,
+)
 from app.db.vector_search import ADM_semantic_search
+
+logger = logging.getLogger(__name__)
 
 
 async def ADM_build_run_invariant_context(project_id: str, chat_id: str | None = None, source: str | None = None) -> dict:
@@ -80,6 +89,48 @@ async def ADM_build_task_context(
     if chat_id:
         await ADM_stream_log(chat_id, src, f"Retrieved {len(refs)} reference doc(s) for this task's context.")
     return {"modeling_reference_hits": refs, "stage": stage, "citations": citations}
+
+
+async def ADM_summarize_attached_files(file_refs: list[dict], chat_id: str | None = None, source: str | None = None) -> str:
+    """
+    Tier 0 conversational answers previously had zero awareness of an
+    attached chat file — ADM_node_extract_intent only ever checked
+    `bool(file_refs)`. This resolves each `{raw_file_id}` pointer to its
+    already-computed structural/aggregate stats in `raw_files` (the same
+    lookup ADM__resolve_source_refs does for Tier 3, reused here so Tier 0
+    gets the same column-level-metadata-only visibility) and formats a
+    short per-file summary line for the answer prompt.
+
+    Never row content, only schema — same privacy boundary as Tier 3
+    (app/core/privacy.py already stripped anything else at upload time).
+    A raw_file_id that no longer resolves (deleted, bad ref) is skipped,
+    not raised — a stale attachment reference must never break a chat answer.
+    """
+    if not file_refs:
+        return ""
+    src = source or ADM_SOURCE_CONTEXT_BUILDER
+    db = ADM_get_db()
+    lines: list[str] = []
+    missing = 0
+    for ref in file_refs:
+        raw_file_id = ref.get("raw_file_id")
+        if not raw_file_id:
+            continue
+        doc = await db[ADM_COLLECTION_RAW_FILES].find_one({"raw_file_id": raw_file_id}, {"_id": 0})
+        if not doc:
+            missing += 1
+            continue
+        columns = doc.get("columns", [])
+        col_summary = ", ".join(f"{c.get('column_name')} ({c.get('dtype')})" for c in columns)
+        lines.append(f"- {doc.get('table_name', raw_file_id)} ({doc.get('row_count', '?')} rows): {col_summary}")
+
+    logger.info(
+        "ADM_summarize_attached_files: resolved %d/%d file_refs (%d missing/stale)",
+        len(lines), len(file_refs), missing,
+    )
+    if chat_id and lines:
+        await ADM_stream_log(chat_id, src, f"Resolved {len(lines)} attached file(s) into schema context for this answer.")
+    return "\n".join(lines)
 
 
 async def ADM_load_pinned_skill(skill_id: str, version: int | None = None) -> dict | None:

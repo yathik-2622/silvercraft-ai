@@ -14,13 +14,15 @@ import os
 
 from app.celery_app.celery_app import ADM_celery_app
 from app.config import ADM_get_settings
+from app.core.artifact_naming import ADM_build_artifact_filename
 from app.core.redis_pubsub import ADM_publish_chat_event, ADM_reset_redis
-from app.core.reasoning_stream import ADM_stream_log
+from app.core.reasoning_stream import ADM_stream_error, ADM_stream_log
 from app.db.mongo_client import ADM_get_db, ADM_reset_mongo_client
 from app.llm.client import ADM_reset_llm_client
 from app.db.collections import (
     ADM_COLLECTION_CHATS, ADM_COLLECTION_EXECUTION_CONTRACTS, ADM_COLLECTION_RUN_STATE,
     ADM_COLLECTION_ARTIFACT_REGISTRY, ADM_COLLECTION_PROVENANCE_REPORTS, ADM_COLLECTION_PROJECTS,
+    ADM_COLLECTION_USERS,
 )
 from app.models.schemas import ADM_RunState, ADM_ExecutionContract, ADM_ProvenanceReport, ADM_ArtifactRecord, ADM_now
 from app.graphs.orchestrator_graph import ADM_run_orchestrator
@@ -30,6 +32,38 @@ from app.tools.ddl_generator import ADM_generate_ddl_script
 from app.tools.git_publish import ADM_push_artifact_to_git
 
 ADM_SOURCE_CELERY = "celery"
+
+
+def ADM__format_llm_error(exc: Exception) -> str:
+    """Shared by every LLM-touching task's failure path (orchestrator_task,
+    plan_task, execute_contract_task/resume_contract_task,
+    normalize_skill_task). A misbehaving endpoint can hand back a full HTML
+    error page as the exception body (confirmed live: a broken custom BYOK
+    base_url landing on a real site's 404 route returned ~290KB of HTML,
+    which openai's client embeds verbatim in str(exc)) — prefer a clean
+    templated message whenever the SDK gives us a status code, and fall
+    back to a short generic line otherwise. Never the raw exception text —
+    it could just as easily contain infra details that don't belong in a
+    user-facing message."""
+    status_code = getattr(exc, "status_code", None)
+    if status_code is not None:
+        return f"the LLM provider returned HTTP {status_code}. Check your provider/base URL/API key in Settings."
+    return f"{type(exc).__name__} — check the server logs for details."
+
+
+async def ADM__post_chat_error(db, chat_id: str, prefix: str, exc: Exception) -> None:
+    """Shared failure-notification path for every LLM-touching task that
+    has a chat_id to report back to (orchestrator_task, plan_task,
+    execute_contract_task/resume_contract_task). Posts a real assistant
+    message through the same orchestrator_response event a successful
+    response uses, so whichever screen the user is watching (chat,
+    reasoning stream) actually shows something instead of hanging with no
+    feedback."""
+    error_detail = ADM__format_llm_error(exc)
+    await ADM_stream_error(chat_id, ADM_SOURCE_CELERY, error_detail)
+    error_msg = {"role": "assistant", "content": f"{prefix}: {error_detail}", "created_at": ADM_now()}
+    await db[ADM_COLLECTION_CHATS].update_one({"chat_id": chat_id}, {"$push": {"messages": error_msg}})
+    await ADM_publish_chat_event(chat_id, "orchestrator_response", error_msg)
 
 
 def ADM_run_async(coro):
@@ -63,9 +97,24 @@ async def ADM_orchestrator_task_async(chat_id, project_id, message, file_refs, s
                                        orchestrator_model=None, derive_title=False, user_id=None):
     await ADM_stream_log(chat_id, ADM_SOURCE_CELERY, "orchestrator_task picked up by worker.")
     db = ADM_get_db()
-    state = await ADM_run_orchestrator(
-        project_id, chat_id, message, file_refs, selected_skill_ids, orchestrator_model, derive_title, user_id
-    )
+    try:
+        state = await ADM_run_orchestrator(
+            project_id, chat_id, message, file_refs, selected_skill_ids, orchestrator_model, derive_title, user_id
+        )
+    except Exception as exc:
+        # Without this, an exception here (a BYOK-misconfigured Orchestrator
+        # call is the most common real-world trigger — see runtime_settings.py)
+        # just crashes the Celery task silently: nothing ever posts back to
+        # the chat, so the UI sits on "Thinking..." forever with no visible
+        # failure. Post a real assistant message through the same
+        # orchestrator_response path a successful run uses. Caught and
+        # returned rather than re-raised — same convention as
+        # ingest_kb_document_task_async below; nothing in this codebase
+        # polls a Celery task's own result/FAILURE state, only Mongo +
+        # Redis pub/sub, so re-raising bought nothing but an inconsistent
+        # second convention.
+        await ADM__post_chat_error(db, chat_id, "Something went wrong processing that message", exc)
+        return {"tier": "error", "missing_info": []}
 
     if derive_title and state.get("derived_title"):
         # Only ever applied to a chat whose title is still the default —
@@ -96,6 +145,8 @@ async def ADM_orchestrator_task_async(chat_id, project_id, message, file_refs, s
         assistant_msg["missing_info"] = state["missing_info"]
     if state.get("create_project_prompt"):
         assistant_msg["create_project_prompt"] = state["create_project_prompt"]
+    if state.get("follow_up_questions"):
+        assistant_msg["follow_up_questions"] = state["follow_up_questions"]
     await db[ADM_COLLECTION_CHATS].update_one({"chat_id": chat_id}, {"$push": {"messages": assistant_msg}})
     await ADM_publish_chat_event(chat_id, "orchestrator_response", assistant_msg)
 
@@ -128,7 +179,18 @@ async def ADM_plan_task_async(project_id, chat_id, workflow_skill_id, source_ref
         for task_entry, chosen in zip(workflow.get("task_list", []), selected_skill_ids):
             user_selected_skills[task_entry["task_id"]] = chosen
 
-    contract = await ADM_plan(project_id, chat_id, workflow_skill_id, source_refs, user_selected_skills)
+    try:
+        contract = await ADM_plan(project_id, chat_id, workflow_skill_id, source_refs, user_selected_skills)
+    except Exception as exc:
+        # Same silent-hang class as orchestrator_task's fix, one screen
+        # over: without this, a failure here (e.g. an LLM call inside
+        # ADM_plan while resolving/describing tasks) never creates a
+        # contract and never publishes anything — the chat's Live
+        # Reasoning stream just goes quiet forever with no Plan panel and
+        # no visible error, which looks identical to "still working."
+        await ADM__post_chat_error(db, chat_id, "Something went wrong building the plan", exc)
+        return {"contract_id": None, "error": True}
+
     await db[ADM_COLLECTION_EXECUTION_CONTRACTS].insert_one(contract.model_dump())
     await ADM_publish_chat_event(chat_id, "plan_ready", {"contract_id": contract.contract_id})
     return {"contract_id": contract.contract_id}
@@ -167,7 +229,23 @@ async def ADM_execute_contract_task_async(contract_id: str, resumed: bool = Fals
         {"contract_id": contract_id}, {"$set": {"status": "running"}}
     )
 
-    run_state = await ADM_execute(contract, run_state)
+    try:
+        run_state = await ADM_execute(contract, run_state)
+    except Exception as exc:
+        # Same silent-hang class as orchestrator_task/plan_task's fixes,
+        # a third screen over: without this, a failure inside ADM_execute
+        # (every TaskWorker invocation is an LLM call) leaves the contract
+        # status stuck at "running" forever — PlanCanvas polls contract
+        # status every 4s while running/approved/paused and would just
+        # keep showing a live "Running" badge with a frozen graph and no
+        # error, indistinguishable from still-working. PlanCanvas already
+        # has a real "Failed" badge (STATUS_LABEL) for exactly this status
+        # value — it was just never reachable from here.
+        await db[ADM_COLLECTION_EXECUTION_CONTRACTS].update_one(
+            {"contract_id": contract_id}, {"$set": {"status": "failed"}}
+        )
+        await ADM__post_chat_error(db, contract.chat_id, "The run failed partway through", exc)
+        return {"contract_id": contract_id, "error": True}
 
     await db[ADM_COLLECTION_RUN_STATE].update_one(
         {"contract_id": contract_id}, {"$set": run_state.model_dump()}, upsert=True
@@ -237,12 +315,32 @@ async def ADM_generate_provenance_and_artifacts(contract: ADM_ExecutionContract,
         # target_platform survives that round-trip intact) rather than
         # continuing to guess from live end-to-end runs.
         project = await db[ADM_COLLECTION_PROJECTS].find_one(
-            {"project_id": contract.project_id}, {"_id": 0, "target_platform": 1}
+            {"project_id": contract.project_id}, {"_id": 0, "target_platform": 1, "name": 1, "owner_user_id": 1}
         )
         target_platform = (project or {}).get("target_platform") or "postgresql"
         ddl_text = ADM_generate_ddl_script(ddl_task_result["output"]["tables"], target_platform=target_platform)
-        filename = f"{contract.contract_id}.sql"
+
+        # Human-readable filename (item 9) — was bare f"{contract_id}.sql".
+        # contract_id stays the registry/download lookup key (unchanged,
+        # see GET /contracts/{contract_id}/download); only the on-disk/
+        # downloaded filename changes.
+        chat = await db[ADM_COLLECTION_CHATS].find_one({"chat_id": contract.chat_id}, {"_id": 0, "title": 1})
+        owner_user_id = (project or {}).get("owner_user_id")
+        owner = await db[ADM_COLLECTION_USERS].find_one({"user_id": owner_user_id}, {"_id": 0, "username": 1}) if owner_user_id else None
+        name_kwargs = dict(
+            owner_username=(owner or {}).get("username") or "unknown_user",
+            project_name=(project or {}).get("name") or "project",
+            chat_title=(chat or {}).get("title") or "chat",
+            artifact_type="ddl", extension="sql",
+        )
+        filename = ADM_build_artifact_filename(**name_kwargs)
         local_path = os.path.join(settings.ARTIFACT_STORAGE_DIR, filename)
+        if os.path.exists(local_path):
+            # Real collision (not the common case) — same owner/project/
+            # chat/type combination already has a file on disk from a
+            # different contract. Disambiguate rather than overwrite.
+            filename = ADM_build_artifact_filename(**name_kwargs, disambiguator=contract.contract_id[-6:])
+            local_path = os.path.join(settings.ARTIFACT_STORAGE_DIR, filename)
         with open(local_path, "w") as f:
             f.write(ddl_text)
         artifact = ADM_ArtifactRecord(
@@ -293,7 +391,37 @@ async def ADM_normalize_skill_task_async(project_id: str, raw_text: str, chat_id
     if chat_id:
         await ADM_stream_log(chat_id, ADM_SOURCE_CELERY, "normalize_skill_task picked up by worker.")
 
-    draft = await ADM_normalize_skill(project_id, raw_text, chat_id=chat_id, target_scope=target_scope, draft_id=draft_id)
+    try:
+        draft = await ADM_normalize_skill(project_id, raw_text, chat_id=chat_id, target_scope=target_scope, draft_id=draft_id)
+    except Exception as exc:
+        # Same silent-hang class, a fourth screen over — and the one place
+        # the fix has to look different: the caller (CreateSkillModal.tsx's
+        # pollDraft, and app/api/routes_skills.py's admin-upload mirror)
+        # already knows draft_id before this task even starts, and polls
+        # GET /skill-drafts/{draft_id} treating every 404 as "not written
+        # yet, keep polling" — with no timeout. ADM_normalize_skill only
+        # ever inserts the draft document on a SUCCESSFUL extraction, so a
+        # failure here previously meant that draft_id 404s forever and the
+        # modal polls indefinitely with zero feedback. Write a real
+        # status="failed" document at the known draft_id instead, so the
+        # frontend has something other than "still 404" to poll into.
+        error_detail = ADM__format_llm_error(exc)
+        if chat_id:
+            await ADM_stream_error(chat_id, ADM_SOURCE_CELERY, error_detail)
+        if draft_id:
+            from app.db.collections import ADM_COLLECTION_SKILL_DRAFTS
+            from app.models.schemas import ADM_SkillDraft
+
+            db = ADM_get_db()
+            placeholder = ADM_SkillDraft(
+                draft_id=draft_id, project_id=project_id, status="failed",
+                error=error_detail, target_scope=target_scope,
+            )
+            await db[ADM_COLLECTION_SKILL_DRAFTS].update_one(
+                {"draft_id": draft_id}, {"$set": placeholder.model_dump()}, upsert=True,
+            )
+        return {"draft_id": draft_id, "missing_fields": [], "error": True}
+
     if chat_id and draft.missing_fields:
         db = ADM_get_db()
         question = (
@@ -323,39 +451,57 @@ def ADM_ingest_kb_document_task(doc_id: str, admin_user_id: str):
 
 async def ADM_ingest_kb_document_task_async(doc_id: str, admin_user_id: str):
     import asyncio
+    import logging
 
     from app.core.chunking import ADM_chunk_text_with_offsets
     from app.core.reasoning_stream import ADM_SOURCE_KB_INGEST
     from app.db.collections import ADM_COLLECTION_KB_DOCUMENTS
     from app.db.vector_search import ADM_upsert_modeling_reference_chunks
+    from app.tools.kb_metadata import ADM_generate_document_metadata
 
+    logger = logging.getLogger(__name__)
     channel = f"kb_ingest:{doc_id}"  # synthetic channel, same Pub/Sub infra as chat streaming
     db = ADM_get_db()
     doc = await db[ADM_COLLECTION_KB_DOCUMENTS].find_one({"doc_id": doc_id})
     if not doc:
+        logger.warning("ingest_kb_document_task: doc_id=%s not found", doc_id)
         return {"status": "failed", "error": "document_not_found"}
 
     strategy = doc.get("chunking_strategy", "markdown")
+    logger.info("ingest_kb_document_task starting: doc_id=%s title=%r strategy=%s chars=%d", doc_id, doc["title"], strategy, len(doc.get("full_text", "")))
     await ADM_stream_log(channel, ADM_SOURCE_KB_INGEST, f"ingest_kb_document_task picked up by worker for '{doc['title']}' (strategy={strategy}).")
 
     try:
         # LangChain's splitters are synchronous, CPU-bound — run in a
         # thread so this Celery task's event loop isn't blocked by it.
         chunks = await asyncio.to_thread(ADM_chunk_text_with_offsets, doc["full_text"], strategy)
+        logger.info("ingest_kb_document_task: doc_id=%s chunked into %d piece(s)", doc_id, len(chunks))
         await ADM_stream_log(channel, ADM_SOURCE_KB_INGEST, f"Split into {len(chunks)} chunk(s) using '{strategy}' strategy (with character offsets for citation highlighting).")
 
         written = await ADM_upsert_modeling_reference_chunks(
             source_doc_id=doc_id, doc_type=doc["doc_type"], title=doc["title"], chunks=chunks
         )
+        logger.info("ingest_kb_document_task: doc_id=%s embedded+upserted %d chunk(s)", doc_id, written)
         await ADM_stream_log(channel, ADM_SOURCE_KB_INGEST, f"Embedded and upserted {written} chunk(s) into modeling_reference.")
 
+        # One-per-document metadata call (app/tools/kb_metadata.py) — best
+        # effort, never fails ingestion; runs after chunks are already
+        # written so a slow/failed summary never blocks the document from
+        # being searchable.
+        metadata = await ADM_generate_document_metadata(doc["full_text"])
+        if metadata.get("summary"):
+            await ADM_stream_log(channel, ADM_SOURCE_KB_INGEST, f"Generated document summary: {metadata['summary'][:150]}")
+        logger.info("ingest_kb_document_task: doc_id=%s summary_len=%d keywords=%s", doc_id, len(metadata.get("summary", "")), metadata.get("keywords"))
+
         await db[ADM_COLLECTION_KB_DOCUMENTS].update_one(
-            {"doc_id": doc_id}, {"$set": {"status": "ready", "chunk_count": written}}
+            {"doc_id": doc_id},
+            {"$set": {"status": "ready", "chunk_count": written, "summary": metadata["summary"], "keywords": metadata["keywords"]}},
         )
         await ADM_publish_chat_event(channel, "kb_ingest_complete", {"doc_id": doc_id, "chunk_count": written})
         return {"status": "ready", "doc_id": doc_id, "chunk_count": written}
 
     except Exception as e:
+        logger.error("ingest_kb_document_task failed: doc_id=%s error=%s", doc_id, e, exc_info=True)
         await ADM_stream_log(channel, ADM_SOURCE_KB_INGEST, f"Ingestion failed: {e}")
         await db[ADM_COLLECTION_KB_DOCUMENTS].update_one({"doc_id": doc_id}, {"$set": {"status": "failed"}})
         await ADM_publish_chat_event(channel, "kb_ingest_failed", {"doc_id": doc_id, "error": str(e)})

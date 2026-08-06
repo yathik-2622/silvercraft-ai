@@ -10,6 +10,7 @@ from app.celery_app.tasks import ADM_embed_skill_task, ADM_normalize_skill_task
 from app.core.auth import ADM_get_current_user_id
 from app.db.mongo_client import ADM_get_db
 from app.db.collections import ADM_COLLECTION_SKILLS, ADM_COLLECTION_SKILL_DRAFTS
+from app.db.vector_search import ADM_next_skill_version
 from app.models.schemas import ADM_Skill, ADM_SkillImportRequest, ADM_new_id, ADM_now
 from app.agents.skill_normalizer import ADM_supply_missing_fields, ADM_approve_skill_draft
 from app.tools.document_text_extract import ADM_extract_document_text
@@ -27,7 +28,13 @@ async def ADM_list_skills(
     title/purpose. `mine=true` restricts to skills created by the calling
     user (created_by_user_id) — this is the "My Skills" tab's query, not
     just scope=user (which would show every user's personal skills mixed
-    together, not just the caller's own)."""
+    together, not just the caller's own).
+
+    Skills now genuinely version (ADM_next_skill_version) instead of
+    always overwriting version=1, so a skill_id+scope with 3 uploads is 3
+    real documents in Mongo — grouped down to one (the highest version)
+    per skill_id+scope here, otherwise the Skill Library would list the
+    same skill 3 times."""
     db = ADM_get_db()
     query: dict = {}
     if kind:
@@ -39,7 +46,14 @@ async def ADM_list_skills(
     if q:
         query["$or"] = [{"title": {"$regex": q, "$options": "i"}},
                          {"purpose": {"$regex": q, "$options": "i"}}]
-    docs = await db[ADM_COLLECTION_SKILLS].find(query, {"_id": 0}).to_list(length=500)
+    pipeline = [
+        {"$match": query},
+        {"$sort": {"version": -1}},
+        {"$group": {"_id": {"skill_id": "$skill_id", "scope": "$scope"}, "doc": {"$first": "$$ROOT"}}},
+        {"$replaceRoot": {"newRoot": "$doc"}},
+        {"$project": {"_id": 0}},
+    ]
+    docs = await db[ADM_COLLECTION_SKILLS].aggregate(pipeline).to_list(length=500)
     return docs
 
 
@@ -109,21 +123,16 @@ async def ADM_import_skill_file(
         except Exception as e:
             raise HTTPException(400, f"Skill file doesn't match the schema: {e}")
 
+        # Server-computed, not whatever the YAML declares — see
+        # ADM_next_skill_version's docstring.
+        skill.version = await ADM_next_skill_version(skill.skill_id, "user")
+
         db = ADM_get_db()
         skill_doc = skill.model_dump()
         skill_doc["last_modified"] = ADM_now()
-        # scope is part of the filter — skill_id+version alone isn't unique
-        # across scopes (the same skill_id legitimately exists at both
-        # scope=global and scope=user, see ADM_resolve_workflow_skill's
-        # scope-priority lookup). Omitting it would upsert into (and
-        # silently overwrite) whichever other-scoped document happens to
-        # share this skill_id+version — confirmed the hard way: this is
-        # the same filter shape app/api/routes_admin.py's
-        # ADM__handle_skill_upload uses, and it clobbered the real
-        # scope=global profile_source skill during testing.
-        await db[ADM_COLLECTION_SKILLS].update_one(
-            {"skill_id": skill.skill_id, "scope": "user", "version": skill.version}, {"$set": skill_doc}, upsert=True,
-        )
+        # No upsert anymore — version is always freshly computed above, so
+        # this insert can never collide with an existing document.
+        await db[ADM_COLLECTION_SKILLS].insert_one(skill_doc)
         ADM_embed_skill_task.delay(skill.skill_id, skill.version, skill.scope)
         return {
             "status": "uploaded", "path": "direct_yaml", "skill_id": skill.skill_id,

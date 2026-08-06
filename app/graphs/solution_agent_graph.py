@@ -35,6 +35,7 @@ from app.core.hitl import ADM_get_hitl_for_skill, ADM_confidence_gate_passes, AD
 from app.core.reasoning_stream import (
     ADM_SOURCE_SOLUTION_AGENT,
     ADM_stream_agent_call,
+    ADM_stream_artifact,
     ADM_stream_fetch,
     ADM_stream_log,
     ADM_stream_node,
@@ -251,10 +252,32 @@ async def ADM_execute_one_task(contract: dict, run_invariant_ctx: dict, planned_
     input_payload = {"resolved_sources": resolved_sources,
                       "prior_results": run_invariant_ctx.get("prior_task_results", {})}
 
+    # Task-scoped plan comments (added pre-approval via POST
+    # /contracts/{id}/comments with task_id set) are real per-task
+    # instructions, not passive annotations — see ADM_add_plan_comment and
+    # task_worker.py's prompt template, which explains how the TaskWorker
+    # is told to treat this key.
+    task_instructions = [
+        c["text"] for c in contract.get("comments", []) if c.get("task_id") == task_id
+    ]
+    if task_instructions:
+        input_payload["user_instructions"] = task_instructions
+
     result = await ADM_run_task_worker(skill, task_ctx, run_invariant_ctx, input_payload, chat_id=chat_id, task_id=task_id)
     await ADM_stream_log(
         chat_id, ADM_SOURCE_SOLUTION_AGENT,
         f"TaskWorker for '{task_id}' returned (confidence={result.get('confidence', 0.5):.2f}).",
+    )
+    # The artifact-canvas delivery point: fires exactly once per completed
+    # task with the REAL parsed output, regardless of whether the task ever
+    # called a native tool (most don't — see task_worker.py's docstring).
+    # This is deliberately NOT derived from the on_tool_end stream, which
+    # only sees native-tool-call payloads, not a task's final JSON answer.
+    await ADM_stream_artifact(
+        chat_id, ADM_SOURCE_SOLUTION_AGENT, task_id=task_id, skill_id=skill["skill_id"],
+        stage=planned_task["stage"], label=skill.get("title", skill["skill_id"]),
+        output=result.get("output", {}), confidence=result.get("confidence", 0.5),
+        citations=task_ctx.get("citations", []),
     )
     return {"task_id": task_id, "skill_id": skill["skill_id"],
             "output": result.get("output", {}), "confidence": result.get("confidence", 0.5),

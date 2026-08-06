@@ -8,14 +8,28 @@ file, computes full structural + aggregate stats in a single pass, and
 returns a payload with zero literal values. The file is never referenced
 again after this function returns; Stage 1's `profile_source` task works
 entirely off what gets persisted here.
+
+Excel has TWO engines, chosen by file size (settings.EXCEL_POLARS_MAX_MB):
+Polars' pl.read_excel (Calamine/Rust, via the `fastexcel` package — much
+faster for typical spreadsheets) for files at/under the threshold, and the
+original openpyxl read_only row-cursor above it. This is deliberately NOT
+an unconditional swap to Polars: pl.read_excel materializes the whole
+sheet (it is not a true streaming/lazy reader the way pl.scan_csv is), so
+for a genuinely huge spreadsheet the openpyxl streaming path is the safer
+choice on memory, not just the slower one — sizing the cutover, not
+picking a single winner, is the correct call here.
 """
+import logging
 from typing import BinaryIO
 
 import openpyxl
 import polars as pl
 
+from app.config import ADM_get_settings
 from app.core.privacy import ADM_mark_value_derived_flagged, ADM_strip_forbidden_fields
 from app.tools.profiling_stats import ADM_compute_distinct_count, ADM_compute_running_null_pct
+
+logger = logging.getLogger(__name__)
 
 ADM_SUPPORTED_EXTENSIONS = {".csv", ".tsv", ".xlsx", ".xls"}
 
@@ -33,6 +47,7 @@ def ADM_extract_source_metadata(file_obj: BinaryIO, filename: str) -> dict:
     if ext not in ADM_SUPPORTED_EXTENSIONS:
         raise ValueError(f"Unsupported file type '{ext}'. Supported: {sorted(ADM_SUPPORTED_EXTENSIONS)}")
 
+    logger.info("Extracting source metadata: filename=%r ext=%s", filename, ext)
     if ext in (".csv", ".tsv"):
         return ADM_extract_csv_metadata(file_obj, filename)
     return ADM_extract_excel_metadata(file_obj, filename)
@@ -87,6 +102,74 @@ def ADM_extract_csv_metadata(file_obj: BinaryIO, filename: str) -> dict:
 
 
 def ADM_extract_excel_metadata(file_obj: BinaryIO, filename: str) -> dict:
+    """Size-gated dispatch between the two Excel engines — see module
+    docstring for why this is a threshold, not an unconditional swap."""
+    file_obj.seek(0, 2)  # SEEK_END
+    size_mb = file_obj.tell() / (1024 * 1024)
+    file_obj.seek(0)
+
+    settings = ADM_get_settings()
+    if size_mb <= settings.EXCEL_POLARS_MAX_MB:
+        logger.info("Excel profiling: filename=%r size=%.2fMB <= %.1fMB threshold -> Polars engine", filename, size_mb, settings.EXCEL_POLARS_MAX_MB)
+        return ADM_extract_excel_metadata_polars(file_obj, filename)
+    logger.info("Excel profiling: filename=%r size=%.2fMB > %.1fMB threshold -> openpyxl streaming engine", filename, size_mb, settings.EXCEL_POLARS_MAX_MB)
+    return ADM_extract_excel_metadata_openpyxl(file_obj, filename)
+
+
+def ADM_extract_excel_metadata_polars(file_obj: BinaryIO, filename: str) -> dict:
+    """
+    Polars' pl.read_excel (Calamine/Rust engine, via `fastexcel`) — same
+    aggregate-expression shape as ADM_extract_csv_metadata above, just
+    computed eagerly against an already-materialized DataFrame rather than
+    a lazy scan (pl.read_excel has no lazy/streaming mode, unlike
+    pl.scan_csv — this is exactly why the size gate in
+    ADM_extract_excel_metadata exists).
+
+    file_obj is read into raw bytes first, deliberately — fastexcel (the
+    Rust engine backing pl.read_excel) only accepts a str/Path/bytes
+    source, not an arbitrary file-like object. A plain io.BytesIO happens
+    to satisfy whatever duck-typing check lets it through, but FastAPI's
+    real UploadFile.file (a SpooledTemporaryFile) does not, and fails deep
+    inside the Rust binding with "source must be a string or bytes" —
+    found live, testing against a real upload through the app, not caught
+    by an isolated io.BytesIO-only test.
+    """
+    file_obj.seek(0)
+    df = pl.read_excel(file_obj.read())
+    row_count = df.height
+
+    columns = []
+    for name in df.columns:
+        series = df[name]
+        dtype = series.dtype
+        col_stat = {
+            "column_name": name,
+            "dtype": str(dtype),
+            "null_pct": ADM_compute_running_null_pct(series.null_count(), row_count),
+            # drop_nulls() first — Polars' n_unique() counts null itself as
+            # one of the distinct values by default, but the openpyxl path
+            # (ADM_compute_distinct_count, over only the non-null values it
+            # collected) never has a null in its set to begin with. Without
+            # this, the same file would report a different distinct_count
+            # purely depending on which engine size-routed it to.
+            "distinct_count": series.drop_nulls().n_unique(),
+            "distinct_count_approximate": False,  # Polars n_unique is exact
+        }
+        if dtype.is_numeric() or dtype in (pl.Date, pl.Datetime, pl.Time):
+            col_stat["min_value"] = series.min()
+            col_stat["max_value"] = series.max()
+            col_stat = ADM_mark_value_derived_flagged(col_stat)
+        columns.append(ADM_strip_forbidden_fields(col_stat))
+
+    return {
+        "table_name": ADM_table_name_from_filename(filename),
+        "row_count": row_count,
+        "column_count": len(columns),
+        "columns": columns,
+    }
+
+
+def ADM_extract_excel_metadata_openpyxl(file_obj: BinaryIO, filename: str) -> dict:
     """
     openpyxl read_only row cursor — the one case that needs a seekable
     buffered stream (XLSX is a zip container), still request-scoped and

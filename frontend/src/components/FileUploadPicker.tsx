@@ -14,19 +14,25 @@ export const FileUploadPicker: React.FC<Props> = ({ projectId, onUploaded }) => 
   const inputRef = useRef<HTMLInputElement>(null);
 
   const handleFileChosen = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
     setError(null);
     setIsUploading(true);
-    try {
-      const rawFile = await uploadsApi.upload(file, projectId);
-      onUploaded(rawFile);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Upload failed.");
-    } finally {
-      setIsUploading(false);
-      if (inputRef.current) inputRef.current.value = "";
+    const failed: string[] = [];
+    // Sequential, not Promise.all — keeps upload order stable so chips
+    // appear in the order the user picked them, and one bad file's error
+    // message doesn't get lost among several in-flight requests.
+    for (const file of files) {
+      try {
+        const rawFile = await uploadsApi.upload(file, projectId);
+        onUploaded(rawFile);
+      } catch (err) {
+        failed.push(`${file.name}: ${err instanceof Error ? err.message : "upload failed"}`);
+      }
     }
+    if (failed.length > 0) setError(failed.join("; "));
+    setIsUploading(false);
+    if (inputRef.current) inputRef.current.value = "";
   };
 
   return (
@@ -34,6 +40,7 @@ export const FileUploadPicker: React.FC<Props> = ({ projectId, onUploaded }) => 
       <input
         ref={inputRef}
         type="file"
+        multiple
         accept=".csv,.tsv,.xlsx,.xls"
         onChange={handleFileChosen}
         className="hidden"
@@ -43,18 +50,14 @@ export const FileUploadPicker: React.FC<Props> = ({ projectId, onUploaded }) => 
         type="button"
         onClick={() => inputRef.current?.click()}
         disabled={isUploading}
-        className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer disabled:opacity-50"
-        title="Attach a source file (.csv/.tsv/.xlsx/.xls)"
+        className="flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-[10px] font-bold text-slate-600 hover:border-slate-300 hover:bg-slate-100 transition cursor-pointer disabled:opacity-50"
+        title="Attach source file(s) (.csv/.tsv/.xlsx/.xls)"
       >
-        <Paperclip className="w-3.5 h-3.5" />
+        <Paperclip className="w-3 h-3" />
+        {isUploading ? "Uploading..." : "Attach files"}
       </button>
-      {isUploading && (
-        <span className="absolute left-full ml-1.5 top-1.5 text-[10px] font-semibold text-slate-400 whitespace-nowrap">
-          Uploading...
-        </span>
-      )}
       {error && (
-        <span className="absolute left-full ml-1.5 top-1.5 text-[10px] font-semibold text-rose-600 whitespace-nowrap">
+        <span className="absolute left-0 top-full mt-1 text-[10px] font-semibold text-rose-600 whitespace-nowrap z-10">
           {error}
         </span>
       )}

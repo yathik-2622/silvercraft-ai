@@ -9,18 +9,23 @@ enforced via app.core.ownership:
                routes_uploads.py/routes_contracts.py using the same
                access-level check.
 """
-from fastapi import APIRouter, Depends, HTTPException
+import asyncio
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from app.core.auth import ADM_get_current_user_id
 from app.core.ownership import ADM_assert_project_access, ADM_assert_project_owner
-from app.db.collections import ADM_COLLECTION_PROJECTS, ADM_COLLECTION_USERS
+from app.db.collections import ADM_COLLECTION_BUSINESS_STANDARDS, ADM_COLLECTION_PROJECTS, ADM_COLLECTION_USERS
 from app.db.mongo_client import ADM_get_db
 from app.models.schemas import (
+    ADM_BusinessStandardsDocument,
+    ADM_BusinessStandardsUpdateRequest,
     ADM_CollaboratorAddRequest,
     ADM_Project,
     ADM_ProjectCreateRequest,
     ADM_ProjectPatchRequest,
 )
+from app.tools.document_text_extract import ADM_extract_document_text
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -148,3 +153,83 @@ async def ADM_remove_collaborator(
         {"project_id": project_id}, {"$pull": {"collaborator_user_ids": user_id}}
     )
     return {"status": "removed", "project_id": project_id, "user_id": user_id}
+
+
+# ---------------------------------------------------------------------------
+# Business Standards — project-owner self-serve (moved off the admin-only
+# upload page; see app/api/routes_admin.py's module docstring for why).
+# Read is owner-or-collaborator (ADM_assert_project_access — anyone on the
+# project should be able to see the standards their modeling runs are
+# governed by); write (PUT/PATCH) is owner-only
+# (ADM_assert_project_owner) — a deliberate permission asymmetry.
+# ---------------------------------------------------------------------------
+
+@router.put("/{project_id}/business-standards")
+async def ADM_upload_business_standards(
+    project_id: str, file: UploadFile = File(...),
+    current_user_id: str = Depends(ADM_get_current_user_id),
+):
+    """First-upload path (and 'replace with a new file' path). Same
+    deterministic text extraction as every other document upload in this
+    app (ADM_extract_document_text) — no LLM/embedding call, so this runs
+    inline in FastAPI, same reasoning as /uploads."""
+    await ADM_assert_project_owner(project_id, current_user_id)
+    try:
+        text = await asyncio.to_thread(ADM_extract_document_text, file.file, file.filename)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    finally:
+        await file.close()
+
+    if not text.strip():
+        raise HTTPException(400, "No extractable text found in this file.")
+
+    doc = ADM_BusinessStandardsDocument(
+        project_id=project_id, source_filename=file.filename, full_text=text, uploaded_by=current_user_id,
+    )
+    db = ADM_get_db()
+    # Upsert on project_id ALONE — one business-standards document per
+    # project, by design; re-uploading replaces it rather than
+    # accumulating a history.
+    await db[ADM_COLLECTION_BUSINESS_STANDARDS].update_one(
+        {"project_id": project_id}, {"$set": doc.model_dump()}, upsert=True,
+    )
+    await db[ADM_COLLECTION_PROJECTS].update_one({"project_id": project_id}, {"$set": {"has_business_standards": True}})
+    return {"status": "uploaded", "project_id": project_id, "char_length": len(text)}
+
+
+@router.patch("/{project_id}/business-standards")
+async def ADM_edit_business_standards(
+    project_id: str, body: ADM_BusinessStandardsUpdateRequest,
+    current_user_id: str = Depends(ADM_get_current_user_id),
+):
+    """Direct-text-edit path — the primary way to fix a typo or tweak a
+    rule once a standards document already exists, without re-exporting
+    and re-uploading the whole document."""
+    await ADM_assert_project_owner(project_id, current_user_id)
+    if body.full_text is None or not body.full_text.strip():
+        raise HTTPException(400, "full_text is required")
+
+    db = ADM_get_db()
+    existing = await db[ADM_COLLECTION_BUSINESS_STANDARDS].find_one({"project_id": project_id})
+    doc = ADM_BusinessStandardsDocument(
+        project_id=project_id,
+        source_filename=(existing or {}).get("source_filename", "edited.md"),
+        full_text=body.full_text, uploaded_by=current_user_id,
+    )
+    await db[ADM_COLLECTION_BUSINESS_STANDARDS].update_one(
+        {"project_id": project_id}, {"$set": doc.model_dump()}, upsert=True,
+    )
+    await db[ADM_COLLECTION_PROJECTS].update_one({"project_id": project_id}, {"$set": {"has_business_standards": True}})
+    return {"status": "updated", "project_id": project_id, "char_length": len(body.full_text)}
+
+
+@router.get("/{project_id}/business-standards")
+async def ADM_get_business_standards(project_id: str, current_user_id: str = Depends(ADM_get_current_user_id)):
+    """Owner OR collaborator can view — see the module note above."""
+    await ADM_assert_project_access(project_id, current_user_id)
+    db = ADM_get_db()
+    doc = await db[ADM_COLLECTION_BUSINESS_STANDARDS].find_one({"project_id": project_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "No business standards document for this project")
+    return doc

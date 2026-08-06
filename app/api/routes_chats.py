@@ -9,6 +9,7 @@ on the chat document is kept as creator provenance, not a visibility
 filter — see app.core.ownership.ADM_assert_chat_access, which every
 route below goes through.
 """
+import logging
 from typing import AsyncGenerator
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -20,6 +21,8 @@ from app.core.ownership import ADM_assert_chat_access, ADM_assert_project_access
 from app.core.redis_pubsub import ADM_subscribe_chat_channel
 from app.db.mongo_client import ADM_get_db, ADM_get_mongo_client
 from app.db.collections import ADM_COLLECTION_CHATS, ADM_COLLECTION_PROJECTS, ADM_COLLECTION_RAW_FILES
+
+logger = logging.getLogger(__name__)
 from app.models.schemas import (
     ADM_Chat,
     ADM_ChatCreateRequest,
@@ -204,6 +207,34 @@ async def ADM_delete_chat(chat_id: str, current_user_id: str = Depends(ADM_get_c
     return {"status": "deleted", "chat_id": chat_id}
 
 
+async def ADM__enrich_file_refs_for_display(db, file_refs: list[dict]) -> list[dict]:
+    """
+    The bare {raw_file_id} pointer `body.file_refs` already carries is
+    exactly what execution needs (app.graphs.solution_agent_graph's
+    ADM__resolve_source_refs does the same lookup at run time) — but the
+    persisted CHAT MESSAGE needs a bit more so a reload can still render
+    the "file attached to this message" card (Phase 4): filename/row_count,
+    not the full structural/aggregate stats payload (that stays scoped to
+    task execution, never duplicated onto the chat message itself).
+    A stale/missing raw_file_id degrades to the bare ref, never raises —
+    a deleted source file must never break sending/loading a chat.
+    """
+    enriched = []
+    for ref in file_refs:
+        raw_file_id = ref.get("raw_file_id")
+        if not raw_file_id:
+            enriched.append(ref)
+            continue
+        doc = await db[ADM_COLLECTION_RAW_FILES].find_one(
+            {"raw_file_id": raw_file_id}, {"_id": 0, "original_filename": 1, "row_count": 1}
+        )
+        if not doc:
+            enriched.append(ref)
+            continue
+        enriched.append({**ref, "original_filename": doc.get("original_filename"), "row_count": doc.get("row_count")})
+    return enriched
+
+
 @router.post("/{chat_id}/messages")
 async def ADM_post_message(
     chat_id: str, body: ADM_MessageCreateRequest, current_user_id: str = Depends(ADM_get_current_user_id)
@@ -211,10 +242,12 @@ async def ADM_post_message(
     """Row 1: persist message, enqueue orchestrator_task, return 202."""
     chat_doc = await ADM_assert_chat_access(chat_id, current_user_id)
 
-    user_msg = {"role": "user", "content": body.content, "created_at": ADM_now(),
-                "file_refs": [f.model_dump() for f in body.file_refs],
-                "selected_skill_ids": body.selected_skill_ids}
     db = ADM_get_db()
+    display_file_refs = await ADM__enrich_file_refs_for_display(db, [f.model_dump() for f in body.file_refs])
+    logger.info("ADM_post_message: chat_id=%s file_refs=%d enriched=%d", chat_id, len(body.file_refs), sum(1 for r in display_file_refs if r.get("original_filename")))
+    user_msg = {"role": "user", "content": body.content, "created_at": ADM_now(),
+                "file_refs": display_file_refs,
+                "selected_skill_ids": body.selected_skill_ids}
     await db[ADM_COLLECTION_CHATS].update_one({"chat_id": chat_id}, {"$push": {"messages": user_msg}})
 
     is_first_message = len(chat_doc.get("messages", [])) == 0

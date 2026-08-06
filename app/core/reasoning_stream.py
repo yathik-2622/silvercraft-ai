@@ -18,6 +18,8 @@ reasoning dropdown:
 "context_builder", "skill_normalizer" — this is what lets the UI attribute
 each line to "which orchestrator/agent is calling what."
 """
+from typing import Any
+
 from app.core.redis_pubsub import ADM_publish_chat_event
 
 # ── canonical source labels ─────────────────────────────────────────────
@@ -72,10 +74,55 @@ async def ADM_stream_tool_start(chat_id: str, source: str, tool_name: str, tool_
     )
 
 
-async def ADM_stream_tool_end(chat_id: str, source: str, tool_name: str, output_preview: str) -> None:
+def ADM_summarize_for_log(value: Any, max_len: int = 150) -> str:
+    """A short, human-readable one-liner for the reasoning log — never a raw
+    JSON slice. The structured value itself (for a completed task's real
+    output) travels through ADM_stream_artifact instead; this is only for
+    the text log line. A dict shaped like a TaskWorker envelope
+    ({"output":..., "confidence":...}) gets a size-hint summary; anything
+    else falls back to a hard-capped str()."""
+    if isinstance(value, dict) and "output" in value and "confidence" in value:
+        inner = value["output"]
+        if isinstance(inner, list):
+            shape_hint = f"{len(inner)} row(s)"
+        elif isinstance(inner, dict):
+            shape_hint = f"{len(inner)} field(s)"
+        else:
+            shape_hint = "result"
+        try:
+            conf = f"{float(value['confidence']):.2f}"
+        except (TypeError, ValueError):
+            conf = str(value["confidence"])
+        return f"confidence={conf}, {shape_hint}"
+
+    text = value if isinstance(value, str) else str(value)
+    text = text.strip()
+    if len(text) > max_len:
+        return text[:max_len] + "…"
+    return text
+
+
+async def ADM_stream_tool_end(chat_id: str, source: str, tool_name: str, output: Any) -> None:
     await ADM_publish_chat_event(
-        chat_id, "tool_end", {"source": source, "tool": tool_name, "output_preview": output_preview[:400]}
+        chat_id, "tool_end", {"source": source, "tool": tool_name, "output_preview": ADM_summarize_for_log(output)}
     )
+
+
+async def ADM_stream_artifact(
+    chat_id: str, source: str, task_id: str, skill_id: str, stage: int, label: str,
+    output: Any, confidence: float | None = None, citations: list[dict] | None = None,
+) -> None:
+    """Carries the REAL structured task output (never stringified) plus
+    enough metadata for the frontend to route it to the right artifact
+    renderer and let a user reopen it later from the chat's artifact chip.
+    One of these per completed Stage 1-4 task — see
+    app.graphs.solution_agent_graph.ADM_execute_one_task, the one place the
+    fully-parsed {output, confidence} already exists with no re-parsing
+    needed, regardless of whether the task ever called a native tool."""
+    await ADM_publish_chat_event(chat_id, "artifact", {
+        "source": source, "task_id": task_id, "skill_id": skill_id, "stage": stage,
+        "label": label, "output": output, "confidence": confidence, "citations": citations or [],
+    })
 
 
 async def ADM_stream_token(chat_id: str, source: str, content: str) -> None:
