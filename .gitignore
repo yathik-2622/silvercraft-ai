@@ -2,3 +2,5 @@ __pycache__
 .env
 *.pyc
 .pytest_cache/
+local_blob_storage/
+local_blob_storage
