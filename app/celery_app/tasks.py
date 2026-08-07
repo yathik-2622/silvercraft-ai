@@ -19,6 +19,7 @@ from app.core.redis_pubsub import ADM_publish_chat_event, ADM_reset_redis
 from app.core.reasoning_stream import ADM_stream_error, ADM_stream_log
 from app.db.mongo_client import ADM_get_db, ADM_reset_mongo_client
 from app.llm.client import ADM_reset_llm_client
+from app.core.runtime_settings import ADM_MissingProviderKeyError
 from app.db.collections import (
     ADM_COLLECTION_CHATS, ADM_COLLECTION_EXECUTION_CONTRACTS, ADM_COLLECTION_RUN_STATE,
     ADM_COLLECTION_ARTIFACT_REGISTRY, ADM_COLLECTION_PROVENANCE_REPORTS, ADM_COLLECTION_PROJECTS,
@@ -45,6 +46,8 @@ def ADM__format_llm_error(exc: Exception) -> str:
     back to a short generic line otherwise. Never the raw exception text —
     it could just as easily contain infra details that don't belong in a
     user-facing message."""
+    if isinstance(exc, ADM_MissingProviderKeyError):
+        return str(exc)
     status_code = getattr(exc, "status_code", None)
     if status_code is not None:
         return f"the LLM provider returned HTTP {status_code}. Check your provider/base URL/API key in Settings."
@@ -151,8 +154,32 @@ async def ADM_orchestrator_task_async(chat_id, project_id, message, file_refs, s
     await ADM_publish_chat_event(chat_id, "orchestrator_response", assistant_msg)
 
     if state["tier"] == "tier3" and not state["missing_info"]:
-        workflow_skill_id = f"workflow_{state.get('modeling_style', 'canonical').lower()}"
-        ADM_plan_task.delay(project_id, chat_id, workflow_skill_id, file_refs, selected_skill_ids)
+        # Contracts are shared per-project (see ADM_ExecutionContract's
+        # module note) — a project only ever has ONE active model, so
+        # before forking a second contract from a different chat, check
+        # whether one's already in progress. The frontend resolves "the"
+        # contract by project_id (GET /projects/{id}/contract), not
+        # chat_id, so an existing model just shows up automatically once
+        # this chat's user opens the canvas — no extra wiring needed here
+        # beyond not creating a competing one.
+        existing_contract = await db[ADM_COLLECTION_EXECUTION_CONTRACTS].find_one(
+            {"project_id": project_id, "status": {"$nin": ["completed", "failed"]}},
+            {"_id": 0, "contract_id": 1},
+        )
+        if existing_contract:
+            resume_msg = {
+                "role": "assistant",
+                "content": (
+                    "This project already has an active model in progress — "
+                    "continuing from where it left off instead of starting a new one."
+                ),
+                "created_at": ADM_now(),
+            }
+            await db[ADM_COLLECTION_CHATS].update_one({"chat_id": chat_id}, {"$push": {"messages": resume_msg}})
+            await ADM_publish_chat_event(chat_id, "orchestrator_response", resume_msg)
+        else:
+            workflow_skill_id = f"workflow_{state.get('modeling_style', 'canonical').lower()}"
+            ADM_plan_task.delay(project_id, chat_id, workflow_skill_id, file_refs, selected_skill_ids)
 
     return {"tier": state["tier"], "missing_info": state.get("missing_info", [])}
 

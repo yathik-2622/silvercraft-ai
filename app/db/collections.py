@@ -21,6 +21,7 @@ ADM_COLLECTION_KB_DOCUMENTS = "kb_documents"               # full source documen
 ADM_COLLECTION_PROVENANCE_REPORTS = "provenance_reports"
 ADM_COLLECTION_AGENT_CHECKPOINTS = "agent_checkpoints"     # LangGraph native checkpointer schema
 ADM_COLLECTION_USER_SETTINGS = "user_settings"             # BYOK LLM runtime settings — not one of the original 15
+ADM_COLLECTION_CHAT_ARTIFACTS = "chat_artifacts"           # per-task structured outputs, persisted for artifact chips to survive a reload — not one of the original 15
 
 ADM_ALL_COLLECTIONS = [
     ADM_COLLECTION_USERS,
@@ -40,4 +41,5 @@ ADM_ALL_COLLECTIONS = [
     ADM_COLLECTION_PROVENANCE_REPORTS,
     ADM_COLLECTION_AGENT_CHECKPOINTS,
     ADM_COLLECTION_USER_SETTINGS,
+    ADM_COLLECTION_CHAT_ARTIFACTS,
 ]

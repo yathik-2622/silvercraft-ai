@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { AlertCircle, CheckCircle2, Loader2, Sparkles, Trash2, Upload, X } from "lucide-react";
 import { adminApi } from "../api/client";
 import { ConfirmModal } from "../components/ConfirmModal";
+import { ModernSelect } from "../components/ModernSelect";
 import type { AdminKbConfig, KbDocument } from "../types";
 
 const MODELING_EXTENSIONS = ".md,.txt,.pdf,.docx,.pptx,.csv,.xlsx";
@@ -182,17 +183,11 @@ export const AdminPage: React.FC = () => {
             </div>
             <div>
               <label className="text-[11px] font-bold text-slate-700 block mb-1">Chunking Strategy</label>
-              <select
+              <ModernSelect
                 value={chunkingStrategy}
-                onChange={(e) => setChunkingStrategy(e.target.value)}
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-orange/30"
-              >
-                {Object.entries(config?.chunking_strategies || { markdown: "Markdown-aware" }).map(([key, desc]) => (
-                  <option key={key} value={key} title={desc}>
-                    {key}
-                  </option>
-                ))}
-              </select>
+                onChange={setChunkingStrategy}
+                options={Object.keys(config?.chunking_strategies || { markdown: "Markdown-aware" }).map((key) => ({ value: key, label: key }))}
+              />
             </div>
             <div className="space-y-1.5">
               <label className="text-[11px] font-bold text-slate-700 block">Files ({MODELING_EXTENSIONS})</label>

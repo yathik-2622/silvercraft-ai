@@ -2,6 +2,7 @@ import type {
   AdminKbConfig,
   BusinessStandardsDocument,
   Chat,
+  Citation,
   Collaborator,
   DbConnection,
   ExecutionContract,
@@ -104,7 +105,7 @@ export const projectsApi = {
       method: "POST",
       body: JSON.stringify({ name, domain, layer }),
     }),
-  patch: (projectId: string, updates: { name?: string; domain?: string; target_platform?: string }) =>
+  patch: (projectId: string, updates: { name?: string; domain?: string; target_platform?: string; layer?: ProjectLayer }) =>
     request<Project>(`/projects/${projectId}`, {
       method: "PATCH",
       body: JSON.stringify(updates),
@@ -126,7 +127,32 @@ export const projectsApi = {
     ),
   getBusinessStandards: (projectId: string) =>
     request<BusinessStandardsDocument>(`/projects/${projectId}/business-standards`),
+  // Every persisted artifact across EVERY chat in the project — the
+  // superset chatsApi.listArtifacts (scoped to one chat) can't give — each
+  // one tagged with which chat produced it and which user owns that chat.
+  listArtifacts: (projectId: string) => request<ProjectArtifact[]>(`/projects/${projectId}/artifacts`),
+  // The ONE shared model for this project — resolved by project_id, not
+  // chat_id, so every collaborator's chat lands on the same contract (see
+  // ADM_ExecutionContract's backend module note). Throws ApiError(404) if
+  // no model has been started for this project yet — callers already
+  // handle that the same way an empty contracts.list() used to.
+  getContract: (projectId: string) => request<ExecutionContract>(`/projects/${projectId}/contract`),
 };
+
+export interface ProjectArtifact {
+  artifact_id: string;
+  chat_id: string;
+  skill_id: string;
+  stage: number;
+  label: string;
+  output: unknown;
+  confidence: number | null;
+  citations: Citation[];
+  created_at: string;
+  chat_title: string;
+  created_by_user_id: string | null;
+  created_by_username: string;
+}
 
 export interface FileRef {
   raw_file_id?: string | null;
@@ -157,7 +183,25 @@ export const chatsApi = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  // Every persisted artifact for this chat (see ADM_stream_artifact) — used
+  // to re-hydrate artifact chips on reload, since the WS stream is live-only.
+  // Raw server shape — no `kind` (client-derived via detectArtifactKind) and
+  // no `task_id` (artifact_id IS the task_id, one-to-one) — see ChatWorkspace's
+  // hydration effect for the mapping into the richer ChatArtifact type.
+  listArtifacts: (chatId: string) => request<PersistedChatArtifact[]>(`/chats/${chatId}/artifacts`),
 };
+
+export interface PersistedChatArtifact {
+  artifact_id: string;
+  chat_id: string;
+  skill_id: string;
+  stage: number;
+  label: string;
+  output: unknown;
+  confidence: number | null;
+  citations: Citation[];
+  created_at: string;
+}
 
 export const messagesApi = {
   send: (chatId: string, content: string, fileRefs: FileRef[] = [], selectedSkillIds: string[] = []) =>
@@ -227,12 +271,21 @@ export const contractsApi = {
   },
 };
 
+export interface DbConnectionCreateFields {
+  dialect: string;
+  host: string;
+  port: number;
+  database: string;
+  username: string;
+  password: string;
+}
+
 export const dbConnectionsApi = {
   list: (projectId: string) => request<DbConnection[]>(`/db-connections?project_id=${projectId}`),
-  create: (projectId: string, dialect: string, dsnRef: string) =>
+  create: (projectId: string, fields: DbConnectionCreateFields) =>
     request<DbConnection>("/db-connections", {
       method: "POST",
-      body: JSON.stringify({ project_id: projectId, dialect, dsn_ref: dsnRef }),
+      body: JSON.stringify({ project_id: projectId, ...fields }),
     }),
 };
 
@@ -245,12 +298,40 @@ export const hitlApi = {
     request<{ status: string; task_id: string }>(`/contracts/${contractId}/hitl/${taskId}/approve`, {
       method: "POST",
     }),
-  edit: (contractId: string, taskId: string, editedOutput: Record<string, unknown>) =>
-    request<{ status: string; task_id: string }>(`/contracts/${contractId}/hitl/${taskId}/edit`, {
+  edit: (
+    contractId: string,
+    taskId: string,
+    editedOutput: Record<string, unknown> | unknown[],
+    baseRevisionCount?: number,
+  ) =>
+    request<{ status: string; task_id: string; revision_count: number }>(`/contracts/${contractId}/hitl/${taskId}/edit`, {
       method: "POST",
-      body: JSON.stringify({ edited_output: editedOutput }),
+      body: JSON.stringify({ edited_output: editedOutput, base_revision_count: baseRevisionCount }),
     }),
 };
+
+// Thrown by hitlApi.edit specifically for a 409 (see ApiError below for
+// the generic HTTP-error path this widens). ApiError's `message` is the
+// JSON-stringified `detail` FastAPI's HTTPException(409, {...}) sent —
+// this just parses it back into the shape ADM_hitl_edit actually returns,
+// so callers don't each re-implement that parsing.
+export interface HitlEditConflict {
+  conflict: true;
+  current_output: unknown;
+  resolved_by_user_id: string | null;
+  updated_at: string;
+  revision_count: number;
+}
+
+export function parseHitlEditConflict(err: unknown): HitlEditConflict | null {
+  if (!(err instanceof ApiError) || err.status !== 409) return null;
+  try {
+    const parsed = JSON.parse(err.message);
+    return parsed && parsed.conflict ? (parsed as HitlEditConflict) : null;
+  } catch {
+    return null;
+  }
+}
 
 export const skillsApi = {
   list: (params: { kind?: string; scope?: string; q?: string; mine?: boolean } = {}) => {

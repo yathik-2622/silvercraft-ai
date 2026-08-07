@@ -110,6 +110,24 @@ async def ADM_get_pending_hitl(contract_id: str, current_user_id: str = Depends(
     }}
 
 
+def ADM__append_task_history(task_result: dict, action: str, user_id: str) -> list[dict]:
+    """Every approve/edit (and the task's own initial completion, appended
+    by ADM_run_stage — see solution_agent_graph.py) gets one entry here.
+    Contracts are shared per-project now (see ADM_ExecutionContract's
+    module note), so this is the only place "who changed this task, and
+    when" is recorded — powers both the "Last touched by X" attribution
+    and the optimistic-concurrency check in ADM_hitl_edit below."""
+    history = list(task_result.get("history") or [])
+    history.append({
+        "output": task_result.get("output"),
+        "confidence": task_result.get("confidence"),
+        "edited_by_user_id": user_id,
+        "created_at": ADM_now(),
+        "action": action,
+    })
+    return history
+
+
 @router.post("/{contract_id}/hitl/{task_id}/approve")
 async def ADM_hitl_approve(
     contract_id: str, task_id: str, current_user_id: str = Depends(ADM_get_current_user_id)
@@ -126,12 +144,19 @@ async def ADM_hitl_approve(
     for g in gates:
         if g["task_id"] == task_id:
             g["status"] = "approved"
+            g["resolved_by_user_id"] = current_user_id
             found = True
     if not found:
         raise HTTPException(404, "No such pending HITL gate for this task")
 
+    task_results = run_state.get("task_results", {})
+    task_result = task_results.get(task_id, {})
+    task_result["history"] = ADM__append_task_history(task_result, "approved", current_user_id)
+    task_results[task_id] = task_result
+
     await db[ADM_COLLECTION_RUN_STATE].update_one(
-        {"contract_id": contract_id}, {"$set": {"hitl_gates": gates, "updated_at": ADM_now()}}
+        {"contract_id": contract_id},
+        {"$set": {"hitl_gates": gates, "task_results": task_results, "updated_at": ADM_now()}},
     )
     ADM_resume_contract_task.delay(contract_id)
     return {"status": "approved", "task_id": task_id}
@@ -142,7 +167,17 @@ async def ADM_hitl_edit(
     contract_id: str, task_id: str, body: ADM_HitlResolveRequest,
     current_user_id: str = Depends(ADM_get_current_user_id),
 ):
-    """Row 6g: edit — NEW snapshot, user_override: true, original untouched."""
+    """Row 6g: edit — NEW snapshot, user_override: true, original untouched.
+
+    Optimistic concurrency (shared-contract collaborators, see
+    ADM_ExecutionContract's module note): if the caller's body includes
+    base_revision_count (how many task_results[task_id].history entries
+    they'd seen when they started editing) and a collaborator has since
+    added a newer entry, reject with 409 instead of silently clobbering it
+    — the response carries the current state so the frontend can show a
+    "Last modified by X" diff/take/keep prompt (ConflictResolutionModal).
+    A missing base_revision_count (older client, or this task's very first
+    edit) skips the check entirely, same as today's behavior."""
     await ADM__get_owned_contract(contract_id, current_user_id)
     db = ADM_get_db()
     run_state = await db[ADM_COLLECTION_RUN_STATE].find_one({"contract_id": contract_id})
@@ -152,26 +187,37 @@ async def ADM_hitl_edit(
         raise HTTPException(400, "edited_output is required for an edit resolution")
 
     gates = run_state.get("hitl_gates", [])
-    found = False
-    for g in gates:
-        if g["task_id"] == task_id:
-            g["status"] = "edited"
-            g["result_snapshot"] = body.edited_output
-            g["user_override"] = True
-            found = True
-    if not found:
+    gate = next((g for g in gates if g["task_id"] == task_id), None)
+    if gate is None:
         raise HTTPException(404, "No such pending HITL gate for this task")
 
     task_results = run_state.get("task_results", {})
-    original = task_results.get(task_id, {})
-    task_results[task_id] = {**original, "output": body.edited_output, "user_override": True}
+    existing_result = task_results.get(task_id, {})
+    current_history = existing_result.get("history") or []
+    if body.base_revision_count is not None and body.base_revision_count != len(current_history):
+        raise HTTPException(409, {
+            "conflict": True,
+            "current_output": existing_result.get("output"),
+            "resolved_by_user_id": gate.get("resolved_by_user_id"),
+            "updated_at": current_history[-1]["created_at"] if current_history else run_state.get("updated_at"),
+            "revision_count": len(current_history),
+        })
+
+    gate["status"] = "edited"
+    gate["result_snapshot"] = body.edited_output
+    gate["user_override"] = True
+    gate["resolved_by_user_id"] = current_user_id
+
+    updated_result = {**existing_result, "output": body.edited_output, "user_override": True}
+    updated_result["history"] = ADM__append_task_history(updated_result, "edited", current_user_id)
+    task_results[task_id] = updated_result
 
     await db[ADM_COLLECTION_RUN_STATE].update_one(
         {"contract_id": contract_id},
         {"$set": {"hitl_gates": gates, "task_results": task_results, "updated_at": ADM_now()}},
     )
     ADM_resume_contract_task.delay(contract_id)
-    return {"status": "edited", "task_id": task_id}
+    return {"status": "edited", "task_id": task_id, "revision_count": len(updated_result["history"])}
 
 
 @router.get("/{contract_id}/provenance")

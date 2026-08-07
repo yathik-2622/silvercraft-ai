@@ -5,13 +5,13 @@ Local, MongoDB-based implementation of the ADM 2.0 "first cut" TDS
 oriented throughout, not hand-rolled orchestration wearing LangGraph's
 name.
 
-| TDS component (Azure) | This build (local) |
-|---|---|
-| Azure Cosmos DB (NoSQL API) | **MongoDB** — your live cluster (`MONGO_URI`), same document shapes |
-| Azure AI Search (`modeling_reference`) | **MongoDB Atlas Vector Search** — TWO indexes now, see below |
-| Azure Cache for Redis | **Local Redis** (Celery broker/backend + Pub/Sub only) |
-| Azure Blob Storage | **Local filesystem** (`ARTIFACT_STORAGE_DIR`) — generated artifacts only, never source data |
-| Azure OpenAI (implied) | Your OpenAI-compatible gateway (`LLM_BASE_URL`/`LLM_API_KEY`/`LLM_MODEL`/`EMBEDDING_MODEL`) |
+| TDS component (Azure)                    | This build (local)                                                                                   |
+| ---------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Azure Cosmos DB (NoSQL API)              | **MongoDB** — your live cluster (`MONGO_URI`), same document shapes                         |
+| Azure AI Search (`modeling_reference`) | **MongoDB Atlas Vector Search** — TWO indexes now, see below                                  |
+| Azure Cache for Redis                    | **Local Redis** (Celery broker/backend + Pub/Sub only)                                         |
+| Azure Blob Storage                       | **Local filesystem** (`ARTIFACT_STORAGE_DIR`) — generated artifacts only, never source data |
+| Azure OpenAI (implied)                   | Your OpenAI-compatible gateway (`LLM_BASE_URL`/`LLM_API_KEY`/`LLM_MODEL`/`EMBEDDING_MODEL`)  |
 
 **No seed script.** Content — both modeling reference documents and
 skill files — goes in through the real admin ingestion pipeline
@@ -99,6 +99,7 @@ can't see.
 
 **1. On the `modeling_reference` collection** (name must match
 `VECTOR_INDEX_NAME` in `.env`, default `modeling_reference_vector_index`):
+
 ```json
 {
   "fields": [
@@ -112,6 +113,7 @@ can't see.
 **2. On the `skills` collection** (name must match `SKILL_VECTOR_INDEX_NAME`
 in `.env`, default `skills_vector_index`) — this is the new one, for
 semantic skill discovery ("what skills do I need for Canonical modeling"):
+
 ```json
 {
   "fields": [
@@ -191,8 +193,7 @@ Docker path just did.
    and create the two Atlas Vector Search indexes (below) — the app runs
    without them via the cosine-similarity fallback, but create them before
    relying on real search performance.
-5. `uvicorn app.main:app --reload --port 8000` (terminal 1), `celery -A
-   app.celery_app.celery_app worker --loglevel=info -P solo` (terminal 2).
+5. `uvicorn app.main:app --reload --port 8000` (terminal 1), `celery -A app.celery_app.celery_app worker --loglevel=info -P solo` (terminal 2).
 6. Register + grant yourself admin (below), then work through
    `SETUP_AND_TESTING.md` end to end — it's the detailed, numbered
    walkthrough this summary points at.
@@ -243,6 +244,7 @@ highlighted chunk (`char_start`/`char_end` from the citation slice
 directly into `full_text`).
 
 **Skill files** — same endpoint, `kb_type=skill`:
+
 - `.yaml`/`.yml` → parsed directly against the exact `ADM_Skill` schema,
   written straight to `skills`, embedded via a lightweight Celery task
   (`embed_skill_task`). **Shows up on the Skill Library page

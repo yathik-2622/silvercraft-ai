@@ -69,8 +69,8 @@ describe("window.confirm removed (Phase 4 regression guard)", () => {
     expect(src).toContain("ConfirmModal");
   });
 
-  test("SidebarNavigator.tsx no longer calls window.confirm", () => {
-    const src = readFileSync(join(__dirname, "./SidebarNavigator.tsx"), "utf-8");
+  test("QuickChatSidebar.tsx no longer calls window.confirm", () => {
+    const src = readFileSync(join(__dirname, "./QuickChatSidebar.tsx"), "utf-8");
     expect(src).not.toContain("window.confirm(");
     expect(src).toContain("ConfirmModal");
   });

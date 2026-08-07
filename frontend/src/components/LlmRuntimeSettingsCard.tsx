@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Cpu, KeyRound, Save, Sparkles } from "lucide-react";
 import { settingsApi } from "../api/client";
+import { ModernSelect } from "./ModernSelect";
 import type { LlmProvider, ModelCatalog, UserSettings, UserSettingsUpdate } from "../types";
 
 const PROVIDERS: { value: LlmProvider; label: string; hint: string }[] = [
@@ -119,17 +120,11 @@ export const LlmRuntimeSettingsCard: React.FC = () => {
 
           <div>
             <label className="text-[11px] font-bold text-slate-700 block mb-1">Provider</label>
-            <select
-              value={form.provider}
-              onChange={(e) => field("provider", e.target.value as LlmProvider)}
-              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-orange/30 cursor-pointer"
-            >
-              {PROVIDERS.map((p) => (
-                <option key={p.value} value={p.value} title={p.hint}>
-                  {p.label}
-                </option>
-              ))}
-            </select>
+            <ModernSelect
+              value={form.provider ?? "gateway"}
+              onChange={(v) => field("provider", v as LlmProvider)}
+              options={PROVIDERS.map((p) => ({ value: p.value, label: p.label }))}
+            />
           </div>
 
           <div>
@@ -144,18 +139,11 @@ export const LlmRuntimeSettingsCard: React.FC = () => {
 
           <div>
             <label className="text-[11px] font-bold text-slate-700 block mb-1">Default model</label>
-            <select
-              value={form.default_model}
-              onChange={(e) => field("default_model", e.target.value)}
-              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-orange/30 cursor-pointer"
-            >
-              <option value="">(provider default)</option>
-              {models.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name}
-                </option>
-              ))}
-            </select>
+            <ModernSelect
+              value={form.default_model ?? ""}
+              onChange={(v) => field("default_model", v)}
+              options={[{ value: "", label: "(provider default)" }, ...models.map((m) => ({ value: m.id, label: m.name }))]}
+            />
             <div className="mt-1 text-[10px] text-slate-400">
               {isLoadingCatalog
                 ? "Refreshing model catalog..."

@@ -2,10 +2,11 @@ import React, { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Bot, BookOpen, Copy, Database, FileText, Layers, RefreshCcw, User, Wrench } from "lucide-react";
-import type { ChatMessage, Citation, ReasoningEvent } from "../../types";
+import type { ChatArtifact, ChatMessage, Citation, ReasoningEvent } from "../../types";
 import { markdownComponents } from "../canvas/renderers/ArtifactMarkdown";
 import { ActionIcon } from "./ActionIcon";
 import { ReasoningAccordion } from "./ReasoningAccordion";
+import { ArtifactChip, ArtifactChipPlaceholder } from "./ArtifactChip";
 
 interface Props {
   message: ChatMessage;
@@ -16,6 +17,9 @@ interface Props {
   onRegenerate: () => void;
   onSelectCitation: (c: Citation) => void;
   onFollowUpClick: (question: string) => void;
+  artifacts: ChatArtifact[];
+  activeArtifactId: string | null;
+  onSelectArtifact: (id: string) => void;
 }
 
 function formatTime(iso: string): string {
@@ -116,6 +120,32 @@ const AttachmentCards: React.FC<{ fileRefs: NonNullable<ChatMessage["file_refs"]
 );
 
 /**
+ * One chip per artifact_id this message announced (a completed stage's
+ * outputs) — resolved against ChatWorkspace's `artifacts` state, which is
+ * hydrated from both the live WS stream and GET /chats/{id}/artifacts on
+ * reload, so a chip clicked long after the run finishes still opens the
+ * right artifact. Clicking always opens the canvas directly on that exact
+ * artifact — no separate graph/plan picker to fight with the click.
+ */
+const ArtifactChips: React.FC<{
+  artifactIds: string[];
+  artifacts: ChatArtifact[];
+  activeArtifactId: string | null;
+  onSelectArtifact: (id: string) => void;
+}> = ({ artifactIds, artifacts, activeArtifactId, onSelectArtifact }) => (
+  <div className="flex flex-wrap gap-1.5 pt-0.5">
+    {artifactIds.map((id) => {
+      const artifact = artifacts.find((a) => a.artifact_id === id);
+      return artifact ? (
+        <ArtifactChip key={id} artifact={artifact} isActive={id === activeArtifactId} onClick={() => onSelectArtifact(id)} />
+      ) : (
+        <ArtifactChipPlaceholder key={id} />
+      );
+    })}
+  </div>
+);
+
+/**
  * Borderless, full-width message layout — replaces the old rounded
  * chat-bubble-with-background treatment. Matches the structural pattern
  * modern AI chat products (Claude, ChatGPT, Cursor) converged on: avatar +
@@ -131,6 +161,9 @@ export const MessageBubble: React.FC<Props> = ({
   onRegenerate,
   onSelectCitation,
   onFollowUpClick,
+  artifacts,
+  activeArtifactId,
+  onSelectArtifact,
 }) => {
   if (message.role === "user") {
     return (
@@ -141,7 +174,7 @@ export const MessageBubble: React.FC<Props> = ({
             <span className="font-bold text-slate-500">You</span>
           </div>
           {message.file_refs && message.file_refs.length > 0 && <AttachmentCards fileRefs={message.file_refs} />}
-          <div className="text-xs font-medium text-slate-800 leading-relaxed [&_p]:m-0">
+          <div className="inline-block text-left rounded-3xl bg-brand-orange px-4 py-2.5 text-xs font-medium text-white leading-relaxed shadow-sm [&_p]:m-0 [&_a]:text-white [&_a]:underline [&_strong]:text-white [&_code]:bg-white/20 [&_code]:text-white">
             <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
               {message.content}
             </ReactMarkdown>
@@ -178,6 +211,15 @@ export const MessageBubble: React.FC<Props> = ({
               {message.content}
             </ReactMarkdown>
           </div>
+        )}
+
+        {message.artifact_ids && message.artifact_ids.length > 0 && (
+          <ArtifactChips
+            artifactIds={message.artifact_ids}
+            artifacts={artifacts}
+            activeArtifactId={activeArtifactId}
+            onSelectArtifact={onSelectArtifact}
+          />
         )}
 
         {message.follow_up_questions && message.follow_up_questions.length > 0 && (

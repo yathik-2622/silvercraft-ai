@@ -1,15 +1,20 @@
 import React, { useRef, useState } from "react";
-import { ArrowLeft, Database, FileText, Plus, Rocket, User, X } from "lucide-react";
-import { collaboratorsApi, dbConnectionsApi, projectsApi } from "../api/client";
+import { ArrowLeft, Database, FileSpreadsheet, FileText, Plus, Rocket, User, X } from "lucide-react";
+import { collaboratorsApi, dbConnectionsApi, projectsApi, uploadsApi } from "../api/client";
 import { DIALECT_OPTIONS } from "../components/DbConnectionPicker";
-import type { Project, ProjectLayer, TargetPlatform } from "../types";
+import { ModernSelect } from "../components/ModernSelect";
+import type { Project, ProjectLayer, RawFile, TargetPlatform } from "../types";
 import { useAuth } from "../auth/AuthContext";
 
 const BUSINESS_STANDARDS_EXTENSIONS = ".md,.txt,.pdf,.docx,.pptx";
+const SOURCE_FILE_EXTENSIONS = ".csv,.tsv,.xlsx,.xls";
 
 interface Props {
   onCancel: () => void;
-  onCreated: (project: Project) => void;
+  // The second arg carries any source files uploaded here so the project's
+  // first chat can pre-attach them to the composer — see
+  // WorkspaceContext.openProject/consumePendingAttachedFiles.
+  onCreated: (project: Project, uploadedSourceFiles?: RawFile[]) => void;
 }
 
 const LAYER_OPTIONS: { value: ProjectLayer; label: string; hint: string }[] = [
@@ -34,9 +39,15 @@ export const CreateProjectCanvas: React.FC<Props> = ({ onCancel, onCreated }) =>
   const [pendingMembers, setPendingMembers] = useState<string[]>([]);
   const [bsFile, setBsFile] = useState<File | null>(null);
   const bsFileInputRef = useRef<HTMLInputElement>(null);
+  const [sourceFiles, setSourceFiles] = useState<File[]>([]);
+  const sourceFilesInputRef = useRef<HTMLInputElement>(null);
   const [wantsDbConnection, setWantsDbConnection] = useState(false);
   const [dbDialect, setDbDialect] = useState(DIALECT_OPTIONS[0]);
-  const [dbDsnRef, setDbDsnRef] = useState("");
+  const [dbHost, setDbHost] = useState("");
+  const [dbPort, setDbPort] = useState("");
+  const [dbDatabase, setDbDatabase] = useState("");
+  const [dbUsername, setDbUsername] = useState("");
+  const [dbPassword, setDbPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -84,9 +95,26 @@ export const CreateProjectCanvas: React.FC<Props> = ({ onCancel, onCreated }) =>
           warnings.push("business standards upload failed — you can retry from the project card");
         }
       }
-      if (wantsDbConnection && dbDsnRef.trim()) {
+      const uploadedSourceFiles: RawFile[] = [];
+      if (sourceFiles.length > 0) {
+        const failedUploads: string[] = [];
+        for (const file of sourceFiles) {
+          try {
+            uploadedSourceFiles.push(await uploadsApi.upload(file, project.project_id));
+          } catch {
+            failedUploads.push(file.name);
+          }
+        }
+        if (failedUploads.length > 0) {
+          warnings.push(`source file upload failed for: ${failedUploads.join(", ")} — you can attach them again in chat`);
+        }
+      }
+      if (wantsDbConnection && dbHost.trim() && dbDatabase.trim() && dbUsername.trim()) {
         try {
-          await dbConnectionsApi.create(project.project_id, dbDialect, dbDsnRef.trim());
+          await dbConnectionsApi.create(project.project_id, {
+            dialect: dbDialect, host: dbHost.trim(), port: Number(dbPort) || 5432,
+            database: dbDatabase.trim(), username: dbUsername.trim(), password: dbPassword,
+          });
         } catch {
           warnings.push("database connection failed to save — you can add it later");
         }
@@ -94,7 +122,7 @@ export const CreateProjectCanvas: React.FC<Props> = ({ onCancel, onCreated }) =>
       if (warnings.length > 0) {
         setWarning(`Project created, but ${warnings.join("; ")}.`);
       }
-      onCreated(project);
+      onCreated(project, uploadedSourceFiles);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create project.");
     } finally {
@@ -164,18 +192,53 @@ export const CreateProjectCanvas: React.FC<Props> = ({ onCancel, onCreated }) =>
 
           <div>
             <label className="text-[11px] font-bold text-slate-700 block mb-1">Target Platform</label>
-            <select
-              value={targetPlatform}
-              onChange={(e) => setTargetPlatform(e.target.value as TargetPlatform)}
-              className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-orange/30 cursor-pointer"
-            >
-              {TARGET_PLATFORM_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
+            <ModernSelect value={targetPlatform} onChange={(v) => setTargetPlatform(v as TargetPlatform)} options={TARGET_PLATFORM_OPTIONS} />
             <p className="text-[10px] text-slate-500 mt-1">Determines the SQL dialect used for generated DDL at Stage 4.</p>
+          </div>
+
+          <div>
+            <label className="text-[11px] font-bold text-slate-700 block mb-1">Source Files (optional)</label>
+            <p className="text-[10px] text-slate-500 mb-1.5">
+              CSV/TSV/XLSX data to model — attached to this project's first chat message automatically, same as
+              attaching a file in the composer. You can also connect a live database below; both can be used together.
+            </p>
+            {sourceFiles.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mb-1.5">
+                {sourceFiles.map((f, idx) => (
+                  <span
+                    key={`${f.name}-${f.size}-${idx}`}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-50 text-blue-700 border border-blue-200 font-bold text-[11px]"
+                  >
+                    <FileSpreadsheet className="w-3 h-3" />
+                    {f.name}
+                    <button
+                      type="button"
+                      onClick={() => setSourceFiles((prev) => prev.filter((_, i) => i !== idx))}
+                      className="hover:bg-blue-200 rounded p-0.5 cursor-pointer"
+                      title="Remove"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <input
+              ref={sourceFilesInputRef}
+              type="file"
+              multiple
+              accept={SOURCE_FILE_EXTENSIONS}
+              onChange={(e) => {
+                const picked = Array.from(e.target.files || []);
+                if (picked.length === 0) return;
+                setSourceFiles((prev) => [
+                  ...prev,
+                  ...picked.filter((f) => !prev.some((p) => p.name === f.name && p.size === f.size)),
+                ]);
+                if (sourceFilesInputRef.current) sourceFilesInputRef.current.value = "";
+              }}
+              className="w-full text-[11px] text-slate-600 file:mr-2 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:bg-blue-50 file:text-blue-700 file:font-bold file:cursor-pointer"
+            />
           </div>
 
           <div>
@@ -233,7 +296,11 @@ export const CreateProjectCanvas: React.FC<Props> = ({ onCancel, onCreated }) =>
                     type="button"
                     onClick={() => {
                       setWantsDbConnection(false);
-                      setDbDsnRef("");
+                      setDbHost("");
+                      setDbPort("");
+                      setDbDatabase("");
+                      setDbUsername("");
+                      setDbPassword("");
                     }}
                     className="text-slate-400 hover:text-rose-600 cursor-pointer"
                     title="Remove"
@@ -241,24 +308,51 @@ export const CreateProjectCanvas: React.FC<Props> = ({ onCancel, onCreated }) =>
                     <X className="w-3.5 h-3.5" />
                   </button>
                 </div>
-                <select
+                <ModernSelect
                   value={dbDialect}
-                  onChange={(e) => setDbDialect(e.target.value)}
-                  className="w-full px-2.5 py-2 bg-white border border-slate-200 rounded-lg text-xs font-semibold text-slate-800 cursor-pointer"
-                >
-                  {DIALECT_OPTIONS.map((d) => (
-                    <option key={d} value={d}>
-                      {d}
-                    </option>
-                  ))}
-                </select>
+                  onChange={setDbDialect}
+                  options={DIALECT_OPTIONS.map((d) => ({ value: d, label: d }))}
+                  className="w-full flex items-center justify-between px-2.5 py-2 bg-white border border-slate-200 rounded-lg text-xs font-semibold text-slate-800 hover:border-slate-300 transition-colors cursor-pointer"
+                />
+                <div className="grid grid-cols-3 gap-1.5">
+                  <input
+                    type="text"
+                    value={dbHost}
+                    onChange={(e) => setDbHost(e.target.value)}
+                    placeholder="Host"
+                    className="col-span-2 px-2.5 py-2 bg-white border border-slate-200 rounded-lg text-xs font-semibold text-slate-800"
+                  />
+                  <input
+                    type="number"
+                    value={dbPort}
+                    onChange={(e) => setDbPort(e.target.value)}
+                    placeholder="Port"
+                    className="px-2.5 py-2 bg-white border border-slate-200 rounded-lg text-xs font-semibold text-slate-800"
+                  />
+                </div>
                 <input
                   type="text"
-                  value={dbDsnRef}
-                  onChange={(e) => setDbDsnRef(e.target.value)}
-                  placeholder="Env var name holding the DSN"
+                  value={dbDatabase}
+                  onChange={(e) => setDbDatabase(e.target.value)}
+                  placeholder="Database name"
                   className="w-full px-2.5 py-2 bg-white border border-slate-200 rounded-lg text-xs font-semibold text-slate-800"
                 />
+                <div className="grid grid-cols-2 gap-1.5">
+                  <input
+                    type="text"
+                    value={dbUsername}
+                    onChange={(e) => setDbUsername(e.target.value)}
+                    placeholder="Username"
+                    className="px-2.5 py-2 bg-white border border-slate-200 rounded-lg text-xs font-semibold text-slate-800"
+                  />
+                  <input
+                    type="password"
+                    value={dbPassword}
+                    onChange={(e) => setDbPassword(e.target.value)}
+                    placeholder="Password"
+                    className="px-2.5 py-2 bg-white border border-slate-200 rounded-lg text-xs font-semibold text-slate-800"
+                  />
+                </div>
               </div>
             )}
           </div>

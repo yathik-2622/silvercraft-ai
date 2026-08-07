@@ -1,7 +1,9 @@
 import React, { useRef, useState } from "react";
-import { FileText, Pencil, X } from "lucide-react";
+import { FileText, Pencil, Users, X } from "lucide-react";
 import { projectsApi } from "../api/client";
-import type { Project, TargetPlatform } from "../types";
+import type { Project, ProjectLayer, TargetPlatform } from "../types";
+import { CollaboratorsModal } from "./CollaboratorsModal";
+import { ModernSelect } from "./ModernSelect";
 
 interface Props {
   project: Project;
@@ -15,14 +17,26 @@ const TARGET_PLATFORM_OPTIONS: { value: TargetPlatform; label: string }[] = [
   { value: "sqlserver", label: "SQL Server" },
 ];
 
+const LAYER_OPTIONS: { value: ProjectLayer; label: string }[] = [
+  { value: "silver", label: "Silver — Foundation" },
+  { value: "gold", label: "Gold — Product" },
+  { value: "bronze", label: "Bronze — Raw" },
+];
+
 const BUSINESS_STANDARDS_EXTENSIONS = ".md,.txt,.pdf,.docx,.pptx";
 
+// Every field a project can be created with is editable here by its owner
+// EXCEPT the DB connection (managed separately, once, at creation only —
+// per the explicit "all apart from source db" scope). Member management
+// reuses CollaboratorsModal directly rather than re-implementing it here.
 export const EditProjectModal: React.FC<Props> = ({ project, onClose, onSaved }) => {
   const [name, setName] = useState(project.name);
   const [domain, setDomain] = useState(project.domain);
+  const [layer, setLayer] = useState<ProjectLayer>(project.layer);
   const [targetPlatform, setTargetPlatform] = useState<TargetPlatform>(project.target_platform || "postgresql");
   const [bsFile, setBsFile] = useState<File | null>(null);
   const bsFileInputRef = useRef<HTMLInputElement>(null);
+  const [showCollaborators, setShowCollaborators] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -39,6 +53,7 @@ export const EditProjectModal: React.FC<Props> = ({ project, onClose, onSaved })
         name: name.trim(),
         domain: domain.trim(),
         target_platform: targetPlatform,
+        layer,
       });
       if (bsFile) {
         try {
@@ -91,18 +106,42 @@ export const EditProjectModal: React.FC<Props> = ({ project, onClose, onSaved })
             />
           </div>
           <div>
-            <label className="text-[11px] font-bold text-slate-700 block mb-1">Target Platform</label>
-            <select
-              value={targetPlatform}
-              onChange={(e) => setTargetPlatform(e.target.value as TargetPlatform)}
-              className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-orange/30 cursor-pointer"
-            >
-              {TARGET_PLATFORM_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
+            <label className="text-[11px] font-bold text-slate-700 block mb-2">Layer</label>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              {LAYER_OPTIONS.map((opt) => (
+                <button
+                  type="button"
+                  key={opt.value}
+                  onClick={() => setLayer(opt.value)}
+                  className={`text-left p-2.5 rounded-xl border-2 transition-all cursor-pointer ${
+                    layer === opt.value
+                      ? "border-brand-orange bg-brand-orange-light"
+                      : "border-slate-200 hover:border-slate-300 bg-slate-50"
+                  }`}
+                >
+                  <div className={`text-[11px] font-bold ${layer === opt.value ? "text-brand-orange" : "text-slate-800"}`}>
+                    {opt.label}
+                  </div>
+                </button>
               ))}
-            </select>
+            </div>
+          </div>
+
+          <div>
+            <label className="text-[11px] font-bold text-slate-700 block mb-1">Team Members</label>
+            <button
+              type="button"
+              onClick={() => setShowCollaborators(true)}
+              className="w-full flex items-center gap-2 px-3 py-2.5 rounded-xl bg-slate-50 border border-slate-200 hover:border-slate-300 text-slate-700 font-semibold text-xs cursor-pointer transition-colors"
+            >
+              <Users className="w-3.5 h-3.5 text-brand-orange" />
+              Manage collaborators ({project.collaborator_user_ids.length})
+            </button>
+          </div>
+
+          <div>
+            <label className="text-[11px] font-bold text-slate-700 block mb-1">Target Platform</label>
+            <ModernSelect value={targetPlatform} onChange={(v) => setTargetPlatform(v as TargetPlatform)} options={TARGET_PLATFORM_OPTIONS} />
             <p className="text-[10px] text-slate-400 mt-1">Determines the SQL dialect used for generated DDL.</p>
           </div>
 
@@ -166,6 +205,9 @@ export const EditProjectModal: React.FC<Props> = ({ project, onClose, onSaved })
           </div>
         </form>
       </div>
+      {showCollaborators && (
+        <CollaboratorsModal project={project} onClose={() => setShowCollaborators(false)} />
+      )}
     </div>
   );
 };

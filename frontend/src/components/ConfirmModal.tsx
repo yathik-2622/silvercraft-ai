@@ -11,8 +11,8 @@ interface Props {
 }
 
 /**
- * Replaces window.confirm() (both real call sites: AdminPage.tsx's
- * delete-document flow and SidebarNavigator.tsx's delete-chat flow) — a
+ * Replaces window.confirm() (real call sites: AdminPage.tsx's
+ * delete-document flow and QuickChatSidebar.tsx's delete-chat flow) — a
  * native browser dialog looks jarring against everything else in this app
  * and can't be styled at all. Same modal-card visual language as every
  * other modal in this app (rounded-2xl/3xl, soft shadow, brand-orange

@@ -1,19 +1,30 @@
 import React, { useEffect, useState } from "react";
-import { MessageSquarePlus, Send } from "lucide-react";
+import { CheckCircle2, Circle, Loader2, MessageSquarePlus, Send } from "lucide-react";
 import { contractsApi, skillsApi } from "../../api/client";
-import type { ExecutionContract, PlannedTask, Skill } from "../../types";
+import type { ExecutionContract, PlannedTask, RunState, Skill } from "../../types";
 import { ArtifactMarkdown } from "./renderers/ArtifactMarkdown";
+import { PlanCommentsPanel } from "./PlanCommentsPanel";
+import { stageLabel } from "./stageLabels";
 
 interface Props {
   contract: ExecutionContract;
+  runState?: RunState | null;
   onCommentAdded: () => void;
 }
 
-const STAGE_LABEL: Record<string, string> = {
-  "1": "Stage 1 · Source Analysis",
-  "2": "Stage 2 · Conceptual",
-  "3": "Stage 3 · Logical",
-  "4": "Stage 4 · Physical & STTM",
+type TaskStatus = "done" | "pending_review" | "not_started";
+
+function taskStatus(taskId: string, runState: RunState | null | undefined): TaskStatus {
+  const gate = runState?.hitl_gates.find((g) => g.task_id === taskId);
+  if (gate?.status === "pending") return "pending_review";
+  if (runState?.task_results[taskId]) return "done";
+  return "not_started";
+}
+
+const STATUS_ICON: Record<TaskStatus, React.ReactNode> = {
+  done: <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />,
+  pending_review: <Loader2 className="w-3.5 h-3.5 text-amber-500 animate-spin" />,
+  not_started: <Circle className="w-3.5 h-3.5 text-slate-300" />,
 };
 
 function taskMarkdown(task: PlannedTask, skill: Skill | undefined): string {
@@ -80,7 +91,7 @@ const TaskCommentEditor: React.FC<{
   );
 };
 
-export const PlanMarkdownView: React.FC<Props> = ({ contract, onCommentAdded }) => {
+export const PlanMarkdownView: React.FC<Props> = ({ contract, runState, onCommentAdded }) => {
   const [skillsById, setSkillsById] = useState<Record<string, Skill>>({});
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
 
@@ -110,6 +121,7 @@ export const PlanMarkdownView: React.FC<Props> = ({ contract, onCommentAdded }) 
 
   return (
     <div className="h-full overflow-y-auto p-4 space-y-5">
+      <PlanCommentsPanel contractId={contract.contract_id} comments={contract.comments} onCommentAdded={onCommentAdded} />
       {Object.keys(contract.stages)
         .sort()
         .map((stageKey) => {
@@ -118,7 +130,7 @@ export const PlanMarkdownView: React.FC<Props> = ({ contract, onCommentAdded }) 
           return (
             <div key={stageKey} className="space-y-3">
               <h2 className="text-xs font-black uppercase tracking-wider text-slate-400">
-                {STAGE_LABEL[stageKey] || `Stage ${stageKey}`}
+                Stage {stageKey} · {stageLabel(Number(stageKey))}
               </h2>
               {tasks.map((task) => {
                 const taskComments = (contract.comments || []).filter((c) => c.task_id === task.task_id);
@@ -129,15 +141,20 @@ export const PlanMarkdownView: React.FC<Props> = ({ contract, onCommentAdded }) 
                     key={task.task_id}
                     className="group relative bg-white border border-slate-200 rounded-xl p-3.5 hover:border-slate-300 transition-colors"
                   >
-                    {canAddTaskInstructions && !isEditing && (
-                      <button
-                        onClick={() => setEditingTaskId(task.task_id)}
-                        title="Give this task a direct instruction"
-                        className="absolute top-3 right-3 p-1.5 rounded-lg text-slate-300 hover:text-brand-orange hover:bg-brand-orange-light opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
-                      >
-                        <MessageSquarePlus className="w-3.5 h-3.5" />
-                      </button>
-                    )}
+                    <div className="absolute top-3 right-3 flex items-center gap-1">
+                      <span title={taskStatus(task.task_id, runState).replace("_", " ")}>
+                        {STATUS_ICON[taskStatus(task.task_id, runState)]}
+                      </span>
+                      {canAddTaskInstructions && !isEditing && (
+                        <button
+                          onClick={() => setEditingTaskId(task.task_id)}
+                          title="Give this task a direct instruction"
+                          className="p-1.5 rounded-lg text-slate-300 hover:text-brand-orange hover:bg-brand-orange-light opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+                        >
+                          <MessageSquarePlus className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
                     <ArtifactMarkdown text={taskMarkdown(task, skillsById[task.skill_id])} />
 
                     {taskComments.length > 0 && !isEditing && (

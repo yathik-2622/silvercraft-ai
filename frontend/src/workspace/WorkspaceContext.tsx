@@ -1,6 +1,6 @@
-import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { chatsApi, projectsApi } from "../api/client";
-import type { Chat, Project } from "../types";
+import type { Chat, Project, RawFile } from "../types";
 
 interface WorkspaceContextValue {
   activeProject: Project | null;
@@ -8,7 +8,11 @@ interface WorkspaceContextValue {
   activeChatId: string | null;
   isLoadingChats: boolean;
   isDashboardChat: boolean;
-  openProject: (project: Project) => void;
+  // Source files uploaded on the "New Project" page before any chat
+  // exists — opening the project carries them along so the composer can
+  // pre-attach them to whatever message the user sends first, the same
+  // way attaching a file mid-conversation already works.
+  openProject: (project: Project, pendingFiles?: RawFile[]) => void;
   closeProject: () => void;
   openDashboardChat: (chatId: string | null) => void;
   selectChat: (chatId: string | null) => void;
@@ -16,6 +20,10 @@ interface WorkspaceContextValue {
   refreshActiveProject: () => Promise<void>;
   renameChat: (chatId: string, title: string) => Promise<void>;
   deleteChat: (chatId: string) => Promise<void>;
+  // One-shot read: returns whatever openProject's pendingFiles were and
+  // clears them, so they're only ever consumed once (by the chat that
+  // first mounts for this project), not re-applied on every later visit.
+  consumePendingAttachedFiles: () => RawFile[];
 }
 
 const WorkspaceContext = createContext<WorkspaceContextValue | undefined>(undefined);
@@ -29,6 +37,9 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   // null in that case too, so this is what distinguishes "dashboard chat
   // open" from "dashboard project grid" in App.tsx's routing.
   const [isDashboardChat, setIsDashboardChat] = useState(false);
+  // A ref, not state — this is a one-shot handoff consumed by ChatWorkspace
+  // on mount, not something any component needs to re-render on.
+  const pendingAttachedFilesRef = useRef<RawFile[]>([]);
 
   const refreshChats = useCallback(async () => {
     if (!activeProject && !isDashboardChat) return;
@@ -44,11 +55,18 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (activeProject || isDashboardChat) refreshChats();
   }, [activeProject, isDashboardChat, refreshChats]);
 
-  const openProject = (project: Project) => {
+  const openProject = (project: Project, pendingFiles?: RawFile[]) => {
+    pendingAttachedFilesRef.current = pendingFiles || [];
     setActiveProject(project);
     setIsDashboardChat(false);
     setActiveChatId(null);
     setChats([]);
+  };
+
+  const consumePendingAttachedFiles = (): RawFile[] => {
+    const files = pendingAttachedFilesRef.current;
+    pendingAttachedFilesRef.current = [];
+    return files;
   };
 
   const closeProject = () => {
@@ -98,6 +116,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         refreshActiveProject,
         renameChat,
         deleteChat,
+        consumePendingAttachedFiles,
       }}
     >
       {children}

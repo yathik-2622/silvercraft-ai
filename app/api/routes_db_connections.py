@@ -25,17 +25,15 @@ stats is the only shape Stage 1 ever looks at, regardless of whether a
 file or a DB table produced it. The client attaches the returned id via
 `{"raw_file_id": ...}` in source_refs exactly like a file.
 
-`dsn_ref` resolution: `ADM_DbConnection.dsn_ref` is documented as "a
-reference/secret name, never the raw credential blob" but nothing in
-this codebase yet defines what it's a reference *to*. This resolves it as
-an environment variable name (`os.environ[dsn_ref]`) — the simplest
-secret-reference convention that keeps an actual DSN (with credentials)
-out of Mongo, consistent with this being a local-first cut with no
-secrets-manager integration anywhere else. Revisit if a real secrets
-store gets wired in later.
+Credential storage: `ADM_DbConnection.password_encrypted` is a Fernet
+ciphertext produced by `ADM_encrypt_secret` (app/core/runtime_settings.py)
+— the exact same helper already used for BYOK LLM API keys. Decrypted
+only at the moment a real connection is opened here
+(`ADM_profile_db_connection`); every route response goes through
+`ADM_DbConnection.public()` so the ciphertext (let alone the plaintext)
+never reaches the client.
 """
 import asyncio
-import os
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -44,34 +42,40 @@ from pydantic import BaseModel
 from app.core.auth import ADM_get_current_user_id
 from app.core.ownership import ADM_assert_project_access
 from app.core.privacy import ADM_assert_no_literal_values, ADM_mark_value_derived_flagged, ADM_strip_forbidden_fields
+from app.core.runtime_settings import ADM_decrypt_secret, ADM_encrypt_secret
 from app.db.collections import ADM_COLLECTION_DB_CONNECTIONS, ADM_COLLECTION_RAW_FILES
 from app.db.mongo_client import ADM_get_db
 from app.models.schemas import ADM_DbConnection, ADM_DbConnectionCreateRequest, ADM_new_id, ADM_now
 from app.tools.db_metadata_introspector import ADM_introspect_schema
-from app.tools.sql_db_connector import ADM_profile_db_table, ADM_run_pushdown_min_max
+from app.tools.sql_db_connector import ADM_build_dsn, ADM_profile_db_table, ADM_run_pushdown_min_max
 
 router = APIRouter(prefix="/db-connections", tags=["db-connections"])
 
 
-@router.post("", response_model=ADM_DbConnection)
+@router.post("")
 async def ADM_create_db_connection(
     body: ADM_DbConnectionCreateRequest, current_user_id: str = Depends(ADM_get_current_user_id)
 ):
     """
-    Registers a DB connection — stores only `dialect` and `dsn_ref` (the
-    env-var name the real DSN lives under, see module docstring), never a
-    raw credential. This is the piece that was previously missing
-    entirely: POST /db-connections/{id}/profile has always required the
-    document to already exist; nothing before this created one.
+    Registers a DB connection — the password is encrypted before it ever
+    reaches Mongo (see module docstring) and this route's own response
+    (`.public()`) never echoes it back. This is the piece that was
+    previously missing entirely: POST /db-connections/{id}/profile has
+    always required the document to already exist; nothing before this
+    created one.
     """
     await ADM_assert_project_access(body.project_id, current_user_id)
-    conn = ADM_DbConnection(project_id=body.project_id, dialect=body.dialect, dsn_ref=body.dsn_ref)
+    conn = ADM_DbConnection(
+        project_id=body.project_id, dialect=body.dialect, host=body.host, port=body.port,
+        database=body.database, username=body.username,
+        password_encrypted=ADM_encrypt_secret(body.password),
+    )
     db = ADM_get_db()
     await db[ADM_COLLECTION_DB_CONNECTIONS].insert_one(conn.model_dump())
-    return conn
+    return conn.public()
 
 
-@router.get("", response_model=list[ADM_DbConnection])
+@router.get("")
 async def ADM_list_db_connections(
     project_id: str, current_user_id: str = Depends(ADM_get_current_user_id)
 ):
@@ -79,7 +83,7 @@ async def ADM_list_db_connections(
     await ADM_assert_project_access(project_id, current_user_id)
     db = ADM_get_db()
     docs = await db[ADM_COLLECTION_DB_CONNECTIONS].find(
-        {"project_id": project_id}, {"_id": 0}
+        {"project_id": project_id}, {"_id": 0, "password_encrypted": 0}
     ).sort("created_at", -1).to_list(length=200)
     return docs
 
@@ -115,9 +119,12 @@ async def ADM_profile_db_connection(
         raise HTTPException(404, "Database connection not found")
     await ADM_assert_project_access(conn_doc["project_id"], current_user_id)
 
-    dsn = os.environ.get(conn_doc["dsn_ref"])
-    if not dsn:
-        raise HTTPException(400, f"No DSN configured for reference '{conn_doc['dsn_ref']}'")
+    password = ADM_decrypt_secret(conn_doc["password_encrypted"])
+    if not password:
+        raise HTTPException(400, "Stored credential could not be decrypted — reconnect this data source.")
+    dsn = ADM_build_dsn(
+        conn_doc["dialect"], conn_doc["host"], conn_doc["port"], conn_doc["database"], conn_doc["username"], password,
+    )
 
     try:
         schema_info = await asyncio.to_thread(ADM_introspect_schema, dsn, body.db_schema)

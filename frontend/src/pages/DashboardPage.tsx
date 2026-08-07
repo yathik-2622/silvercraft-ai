@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { motion } from "motion/react";
 import {
   Building2,
   Database,
@@ -86,10 +87,10 @@ export const DashboardPage: React.FC = () => {
       <div className="w-full h-[calc(100vh-3.5rem)] overflow-y-auto p-4 md:p-6 bg-slate-100">
         <CreateProjectCanvas
           onCancel={() => setCanvasMode("list")}
-          onCreated={(project) => {
+          onCreated={(project, uploadedSourceFiles) => {
             setCanvasMode("list");
             loadProjects();
-            openProject(project);
+            openProject(project, uploadedSourceFiles);
           }}
         />
       </div>
@@ -106,8 +107,15 @@ export const DashboardPage: React.FC = () => {
   });
 
   return (
-    <div className="w-full h-[calc(100vh-3.5rem)] overflow-y-auto p-4 md:p-6 space-y-6 bg-slate-100 text-slate-800">
-      <main className="max-w-7xl mx-auto space-y-6">
+    <div className="relative w-full h-[calc(100vh-3.5rem)] overflow-y-auto p-4 md:p-6 space-y-6 bg-slate-50 text-slate-800">
+      {/* Ambient background glow — premium-studio direction (Phase 5), same
+          brand-orange + cool-complementary pairing used on the project chat
+          background, kept subtle enough not to fight the content. */}
+      <div className="fixed inset-0 z-0 overflow-hidden pointer-events-none">
+        <div className="absolute top-[-15%] left-[-8%] w-[45%] h-[45%] rounded-full bg-brand-orange/10 blur-[120px]" />
+        <div className="absolute bottom-[-15%] right-[-8%] w-[45%] h-[45%] rounded-full bg-blue-500/10 blur-[120px]" />
+      </div>
+      <main className="relative z-10 max-w-7xl mx-auto space-y-6">
         <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-2xs space-y-2">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-brand-orange-light text-brand-orange flex items-center justify-center border border-brand-orange/20 shrink-0">
@@ -234,7 +242,7 @@ export const DashboardPage: React.FC = () => {
             {tab === "owned" && (
               <div
                 onClick={() => setCanvasMode("create")}
-                className="p-5 rounded-2xl bg-gradient-to-br from-orange-50 via-white to-amber-50 border-2 border-dashed border-brand-orange hover:border-brand-orange-hover shadow-md hover:shadow-lg transition-all cursor-pointer flex flex-col items-center justify-center text-center space-y-3 group min-h-[220px]"
+                className="p-5 rounded-3xl bg-gradient-to-br from-orange-50 via-white to-amber-50 border-2 border-dashed border-brand-orange hover:border-brand-orange-hover shadow-md hover:shadow-xl hover:-translate-y-1 transition-all duration-300 cursor-pointer flex flex-col items-center justify-center text-center space-y-3 group min-h-[220px]"
               >
                 <div className="w-12 h-12 rounded-2xl bg-brand-orange text-white flex items-center justify-center shadow-md group-hover:scale-110 transition-transform">
                   <Plus className="w-6 h-6 stroke-[3]" />
@@ -248,10 +256,13 @@ export const DashboardPage: React.FC = () => {
               </div>
             )}
 
-            {filtered.map((proj) => (
-              <div
+            {filtered.map((proj, idx) => (
+              <motion.div
                 key={proj.project_id}
-                className={`bg-white border border-slate-200 rounded-2xl p-5 shadow-2xs hover:shadow-md transition-all flex flex-col justify-between space-y-4 group ${
+                initial={{ opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.3, delay: Math.min(idx, 8) * 0.04 }}
+                className={`bg-white border border-slate-200 rounded-3xl p-5 shadow-2xs hover:shadow-xl hover:-translate-y-1 transition-all duration-300 flex flex-col justify-between space-y-4 group ${
                   tab === "owned" ? "hover:border-brand-orange" : "hover:border-amber-400"
                 }`}
               >
@@ -330,7 +341,7 @@ export const DashboardPage: React.FC = () => {
                     <span>Launch</span>
                   </button>
                 </div>
-              </div>
+              </motion.div>
             ))}
 
             {filtered.length === 0 && search && (

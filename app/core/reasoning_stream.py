@@ -21,6 +21,9 @@ each line to "which orchestrator/agent is calling what."
 from typing import Any
 
 from app.core.redis_pubsub import ADM_publish_chat_event
+from app.db.collections import ADM_COLLECTION_CHAT_ARTIFACTS
+from app.db.mongo_client import ADM_get_db
+from app.models.schemas import ADM_now
 
 # ── canonical source labels ─────────────────────────────────────────────
 ADM_SOURCE_ORCHESTRATOR = "orchestrator"
@@ -118,11 +121,29 @@ async def ADM_stream_artifact(
     One of these per completed Stage 1-4 task — see
     app.graphs.solution_agent_graph.ADM_execute_one_task, the one place the
     fully-parsed {output, confidence} already exists with no re-parsing
-    needed, regardless of whether the task ever called a native tool."""
+    needed, regardless of whether the task ever called a native tool.
+
+    Persisted here (not just published) — this is the single funnel point
+    every artifact already passes through, so a page reload can still
+    resolve a chat's past artifact chips via GET /chats/{id}/artifacts
+    instead of losing them the moment the WS connection drops."""
     await ADM_publish_chat_event(chat_id, "artifact", {
         "source": source, "task_id": task_id, "skill_id": skill_id, "stage": stage,
         "label": label, "output": output, "confidence": confidence, "citations": citations or [],
     })
+    db = ADM_get_db()
+    # upsert on artifact_id (== task_id): a task re-run after a HITL edit
+    # reuses the same task_id, and the chip/canvas should always resolve
+    # to that task's LATEST output, not accumulate duplicate documents.
+    await db[ADM_COLLECTION_CHAT_ARTIFACTS].update_one(
+        {"artifact_id": task_id},
+        {"$set": {
+            "artifact_id": task_id, "chat_id": chat_id, "skill_id": skill_id, "stage": stage,
+            "label": label, "output": output, "confidence": confidence, "citations": citations or [],
+            "created_at": ADM_now(),
+        }},
+        upsert=True,
+    )
 
 
 async def ADM_stream_token(chat_id: str, source: str, content: str) -> None:

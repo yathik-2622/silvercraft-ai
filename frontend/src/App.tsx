@@ -2,54 +2,58 @@ import React, { useState } from "react";
 import { AuthProvider, useAuth } from "./auth/AuthContext";
 import { AuthPage } from "./pages/AuthPage";
 import { DashboardPage } from "./pages/DashboardPage";
-import { ChatWorkspace } from "./pages/ChatWorkspace";
+import { ProjectChatPage } from "./pages/ProjectChatPage";
+import { QuickChatPage } from "./pages/QuickChatPage";
 import { SkillLibraryPage } from "./pages/SkillLibraryPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { AdminPage } from "./pages/AdminPage";
-import { SidebarNavigator } from "./components/SidebarNavigator";
+import { DashboardHeader, type TopView } from "./components/DashboardHeader";
+import { FloatingQuickChatButton } from "./components/FloatingQuickChatButton";
 import { WorkspaceProvider, useWorkspace } from "./workspace/WorkspaceContext";
 
-type View = "dashboard" | "skills" | "settings" | "admin";
-
+// Phase 4 navigation rebuild: no more persistent global sidebar around
+// every view. Three distinct top-level shells instead:
+//   1. Project chat (activeProject set) — ProjectChatPage fills the whole
+//      screen: a chat-history sidebar scoped to this project alongside
+//      ChatWorkspace.
+//   2. Quick Chat (isDashboardChat set, no project) — QuickChatPage fills
+//      the whole screen with its own local sidebar, no dashboard header.
+//   3. Dashboard family (neither) — DashboardHeader + whichever of
+//      Dashboard/Skills/Upload/Settings is active, plus the floating
+//      Quick Chat launcher.
 const AuthenticatedShell: React.FC = () => {
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
-  const [activeView, setActiveView] = useState<View>("dashboard");
-  const { activeProject, isDashboardChat, closeProject } = useWorkspace();
+  const [topView, setTopView] = useState<TopView>("dashboard");
+  const { activeProject, isDashboardChat, closeProject, openDashboardChat } = useWorkspace();
 
-  const navigate = (view: View) => {
-    closeProject();
-    setActiveView(view);
-  };
+  if (activeProject) {
+    return <ProjectChatPage project={activeProject} onBack={closeProject} />;
+  }
+
+  if (isDashboardChat) {
+    return <QuickChatPage onHome={closeProject} />;
+  }
 
   return (
-    <div className="min-h-screen flex font-sans bg-slate-50 text-slate-800">
-      <SidebarNavigator
-        isCollapsed={isSidebarCollapsed}
-        onToggleCollapse={() => setIsSidebarCollapsed((v) => !v)}
-        onSelectProjects={() => navigate("dashboard")}
-        onSelectSkillLibrary={() => navigate("skills")}
-        onSelectSettings={() => navigate("settings")}
-        onSelectAdmin={() => navigate("admin")}
-        activeView={activeView}
+    <div className="min-h-screen flex flex-col bg-slate-50 text-slate-800">
+      <DashboardHeader
+        activeView={topView}
+        onSelectDashboard={() => setTopView("dashboard")}
+        onSelectSkills={() => setTopView("skills")}
+        onSelectAdmin={() => setTopView("admin")}
+        onSelectSettings={() => setTopView("settings")}
       />
-      <div className="flex-1 flex flex-col min-w-0">
-        <header className="h-14 border-b border-slate-200 bg-white flex items-center px-5 shrink-0">
-          <span className="text-sm font-extrabold text-slate-900">Assisted Data Modelling</span>
-        </header>
-        <main className="flex-1 overflow-y-auto">
-          {activeProject || isDashboardChat ? (
-            <ChatWorkspace project={activeProject} onBack={closeProject} />
-          ) : activeView === "skills" ? (
-            <SkillLibraryPage />
-          ) : activeView === "settings" ? (
-            <SettingsPage />
-          ) : activeView === "admin" ? (
-            <AdminPage />
-          ) : (
-            <DashboardPage />
-          )}
-        </main>
-      </div>
+      <main className="flex-1">
+        {topView === "skills" ? (
+          <SkillLibraryPage />
+        ) : topView === "settings" ? (
+          <SettingsPage />
+        ) : topView === "admin" ? (
+          <AdminPage />
+        ) : (
+          <DashboardPage />
+        )}
+      </main>
+      <FloatingQuickChatButton onClick={() => openDashboardChat(null)} />
     </div>
   );
 };

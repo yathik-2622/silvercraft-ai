@@ -26,6 +26,20 @@ describe("CreateProjectCanvas — Database Connection section (Phase 5)", () => 
   });
 });
 
+describe("CreateProjectCanvas — Source Files section", () => {
+  test("renders a Source Files upload section that can be used alongside the DB connection", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(CreateProjectCanvas, { onCancel: () => {}, onCreated: () => {} }),
+    );
+    expect(html).toContain("Source Files (optional)");
+    expect(html).toContain("both can be used together");
+    // Both an upload input and the DB connection entry point exist in the
+    // same render — neither is exclusive with the other.
+    expect(html).toContain('accept=".csv,.tsv,.xlsx,.xls"');
+    expect(html).toContain("Add a database connection");
+  });
+});
+
 describe("ChatWorkspace.tsx no longer imports DbConnectionPicker (Phase 5 regression guard)", () => {
   test("composer has no DbConnectionPicker usage", async () => {
     const { readFileSync } = await import("node:fs");

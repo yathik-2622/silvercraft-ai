@@ -20,7 +20,9 @@ from app.core.auth import ADM_get_current_user_id
 from app.core.ownership import ADM_assert_chat_access, ADM_assert_project_access
 from app.core.redis_pubsub import ADM_subscribe_chat_channel
 from app.db.mongo_client import ADM_get_db, ADM_get_mongo_client
-from app.db.collections import ADM_COLLECTION_CHATS, ADM_COLLECTION_PROJECTS, ADM_COLLECTION_RAW_FILES
+from app.db.collections import (
+    ADM_COLLECTION_CHATS, ADM_COLLECTION_PROJECTS, ADM_COLLECTION_RAW_FILES, ADM_COLLECTION_CHAT_ARTIFACTS,
+)
 
 logger = logging.getLogger(__name__)
 from app.models.schemas import (
@@ -164,6 +166,20 @@ async def ADM_get_chat(chat_id: str, current_user_id: str = Depends(ADM_get_curr
     doc = await ADM_assert_chat_access(chat_id, current_user_id)
     doc.pop("_id", None)
     return doc
+
+
+@router.get("/{chat_id}/artifacts")
+async def ADM_list_chat_artifacts(chat_id: str, current_user_id: str = Depends(ADM_get_current_user_id)):
+    """Every persisted Stage 1-4 task output for this chat (see
+    ADM_stream_artifact) — what lets a reloaded chat's artifact chips
+    (rendered under the assistant message that announced them) still
+    resolve to a real artifact instead of vanishing with the WS session."""
+    await ADM_assert_chat_access(chat_id, current_user_id)
+    db = ADM_get_db()
+    docs = await db[ADM_COLLECTION_CHAT_ARTIFACTS].find(
+        {"chat_id": chat_id}, {"_id": 0}
+    ).sort("created_at", 1).to_list(length=500)
+    return docs
 
 
 @router.patch("/{chat_id}", response_model=ADM_Chat)

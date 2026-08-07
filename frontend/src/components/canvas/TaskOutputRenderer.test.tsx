@@ -24,14 +24,34 @@ function render(output: unknown): string {
 }
 
 describe("TaskOutputRenderer nested-array cell rendering", () => {
-  test("a nested record-array inside a row renders as a real nested <table>, not JSON.stringify text", () => {
+  test("a per-table array (table_name + nested columns) renders as a real <table>, not JSON.stringify text", () => {
     const html = render(PROFILE_SOURCE_OUTPUT);
     expect(html).not.toContain("JSON.stringify");
     expect(html).not.toContain('[{&quot;column_name&quot;');
     expect(html).not.toContain('[{"column_name"');
-    // The outer table (one row per source table) plus a nested inner
-    // table (one row per column) for the `columns` cell -> at least 2
-    // <table> elements total.
+    // Phase (per-table sections): profiling across N tables now renders as
+    // N full vertical sections (table name as its own sub-header + a real,
+    // full-size table of that table's columns) instead of one combined
+    // outer table with a tiny compact nested cell per row.
+    expect(html).toContain("crm_customers");
+    const tableCount = (html.match(/<table/g) || []).length;
+    expect(tableCount).toBeGreaterThanOrEqual(1);
+  });
+
+  test("profiling across multiple tables renders one section per table", () => {
+    const twoTables = [
+      ...PROFILE_SOURCE_OUTPUT,
+      {
+        table_name: "orders",
+        row_count: 10,
+        column_count: 3,
+        columns: [{ column_name: "order_id", dtype: "Int64", null_pct: 0, distinct_count: 10, anomalies: [] }],
+      },
+    ];
+    const html = render(twoTables);
+    expect(html).toContain("crm_customers");
+    expect(html).toContain("orders");
+    expect(html).toContain("order_id");
     const tableCount = (html.match(/<table/g) || []).length;
     expect(tableCount).toBeGreaterThanOrEqual(2);
   });

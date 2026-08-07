@@ -40,8 +40,11 @@ from app.core.reasoning_stream import (
     ADM_stream_log,
     ADM_stream_node,
 )
+from app.core.redis_pubsub import ADM_publish_chat_event
 from app.db.mongo_client import ADM_get_db
-from app.db.collections import ADM_COLLECTION_SKILLS, ADM_COLLECTION_AGENT_CHECKPOINTS, ADM_COLLECTION_RAW_FILES
+from app.db.collections import (
+    ADM_COLLECTION_SKILLS, ADM_COLLECTION_AGENT_CHECKPOINTS, ADM_COLLECTION_RAW_FILES, ADM_COLLECTION_CHATS,
+)
 from app.graphs.checkpointer import ADM_get_solution_agent_checkpointer
 from app.models.schemas import (
     ADM_ExecutionContract, ADM_PlannedTask, ADM_RunState, ADM_HitlGate, ADM_now,
@@ -446,9 +449,19 @@ async def ADM_run_stage(contract: ADM_ExecutionContract, run_state: ADM_RunState
             # Resolved concurrently (e.g. a race with another resume) — don't clobber it.
             continue
 
-        run_state.task_results[task_id] = {"output": res["output"], "confidence": res["confidence"],
-                                            "skill_id": res.get("skill_id", planned.skill_id),
-                                            "citations": res.get("citations", [])}
+        run_state.task_results[task_id] = {
+            "output": res["output"], "confidence": res["confidence"],
+            "skill_id": res.get("skill_id", planned.skill_id),
+            "citations": res.get("citations", []),
+            # Revision 0 — system-generated, no user. ADM_hitl_approve/edit
+            # (routes_contracts.py) append every subsequent revision as a
+            # project collaborator resolves this gate; the count backs the
+            # optimistic-concurrency check on ADM_hitl_edit.
+            "history": [{
+                "output": res["output"], "confidence": res["confidence"],
+                "edited_by_user_id": None, "created_at": ADM_now(), "action": "generated",
+            }],
+        }
 
         gate = ADM_hitl_manager_route(task_id, hitl, res["confidence"], planned.hitl_reason)
         await ADM_stream_log(
@@ -497,6 +510,36 @@ async def ADM_persist_checkpoint(contract_id: str, run_state: ADM_RunState) -> N
     )
 
 
+ADM_STAGE_LABELS = {
+    1: "Stage 1 · Source Analysis",
+    2: "Stage 2 · Conceptual Modeling",
+    3: "Stage 3 · Logical Modeling",
+    4: "Stage 4 · Physical & STTM",
+}
+
+
+async def ADM__announce_new_artifacts(chat_id: str, stage: int, before: dict, after: dict) -> None:
+    """Diffs run_state.task_results before/after one ADM_run_stage() call
+    to find the task_ids that JUST completed, and — if any — pushes one
+    assistant chat message carrying their artifact_ids, so MessageBubble
+    can render a clickable chip under it (Phase 2). Deliberately one
+    message per STAGE batch, not per task, to avoid spamming the
+    transcript with a message per individual task completion."""
+    new_task_ids = [tid for tid in after if tid not in before]
+    if not new_task_ids:
+        return
+    db = ADM_get_db()
+    label = ADM_STAGE_LABELS.get(stage, f"Stage {stage}")
+    msg = {
+        "role": "assistant",
+        "content": f"{label} output is ready for review.",
+        "artifact_ids": new_task_ids,
+        "created_at": ADM_now(),
+    }
+    await db[ADM_COLLECTION_CHATS].update_one({"chat_id": chat_id}, {"$push": {"messages": msg}})
+    await ADM_publish_chat_event(chat_id, "orchestrator_response", msg)
+
+
 async def ADM_execute(contract: ADM_ExecutionContract, run_state: ADM_RunState) -> ADM_RunState:
     """
     `.execute()` — TDS §5 row 6. Drives the Stage 1->4 loop starting from
@@ -515,7 +558,9 @@ async def ADM_execute(contract: ADM_ExecutionContract, run_state: ADM_RunState) 
         if status == "done":
             continue
 
+        task_results_before = dict(run_state.task_results)
         run_state = await ADM_run_stage(contract, run_state, stage)
+        await ADM__announce_new_artifacts(chat_id, stage, task_results_before, run_state.task_results)
 
         if run_state.stage_status[str(stage)] == "awaiting_hitl":
             run_state.current_stage = stage

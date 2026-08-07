@@ -15,7 +15,10 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from app.core.auth import ADM_get_current_user_id
 from app.core.ownership import ADM_assert_project_access, ADM_assert_project_owner
-from app.db.collections import ADM_COLLECTION_BUSINESS_STANDARDS, ADM_COLLECTION_PROJECTS, ADM_COLLECTION_USERS
+from app.db.collections import (
+    ADM_COLLECTION_BUSINESS_STANDARDS, ADM_COLLECTION_CHAT_ARTIFACTS, ADM_COLLECTION_CHATS,
+    ADM_COLLECTION_EXECUTION_CONTRACTS, ADM_COLLECTION_PROJECTS, ADM_COLLECTION_USERS,
+)
 from app.db.mongo_client import ADM_get_db
 from app.models.schemas import (
     ADM_BusinessStandardsDocument,
@@ -232,4 +235,66 @@ async def ADM_get_business_standards(project_id: str, current_user_id: str = Dep
     doc = await db[ADM_COLLECTION_BUSINESS_STANDARDS].find_one({"project_id": project_id}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "No business standards document for this project")
+    return doc
+
+
+# ---------------------------------------------------------------------------
+# Project-wide artifacts
+# ---------------------------------------------------------------------------
+
+@router.get("/{project_id}/artifacts")
+async def ADM_list_project_artifacts(project_id: str, current_user_id: str = Depends(ADM_get_current_user_id)):
+    """Every persisted Stage 1-4 task output across EVERY chat in this
+    project — not just whichever one chat a viewer currently has open.
+    ADM_list_chat_artifacts (routes_chats.py) is scoped to one chat_id; this
+    is the project-wide superset a dedicated "Artifacts" view needs, each
+    one tagged with which chat produced it and which user owns that chat
+    (a chat has exactly one owning user_id today — see ADM_Chat — so that's
+    used as the attribution rather than tracking a user_id per artifact,
+    which nothing upstream currently records)."""
+    await ADM_assert_project_access(project_id, current_user_id)
+    db = ADM_get_db()
+    chats = await db[ADM_COLLECTION_CHATS].find(
+        {"project_id": project_id}, {"_id": 0, "chat_id": 1, "title": 1, "user_id": 1}
+    ).to_list(length=500)
+    if not chats:
+        return []
+    chat_by_id = {c["chat_id"]: c for c in chats}
+    user_ids = list({c["user_id"] for c in chats if c.get("user_id")})
+    users = await db[ADM_COLLECTION_USERS].find(
+        {"user_id": {"$in": user_ids}}, {"_id": 0, "user_id": 1, "username": 1}
+    ).to_list(length=200)
+    username_by_id = {u["user_id"]: u["username"] for u in users}
+    artifacts = await db[ADM_COLLECTION_CHAT_ARTIFACTS].find(
+        {"chat_id": {"$in": list(chat_by_id.keys())}}, {"_id": 0}
+    ).sort("created_at", 1).to_list(length=2000)
+    for a in artifacts:
+        chat = chat_by_id.get(a["chat_id"], {})
+        a["chat_title"] = chat.get("title", "")
+        a["created_by_user_id"] = chat.get("user_id")
+        a["created_by_username"] = username_by_id.get(chat.get("user_id"), "unknown")
+    return artifacts
+
+
+# ---------------------------------------------------------------------------
+# Shared project-level contract
+# ---------------------------------------------------------------------------
+
+@router.get("/{project_id}/contract")
+async def ADM_get_project_contract(project_id: str, current_user_id: str = Depends(ADM_get_current_user_id)):
+    """The ONE shared model for this project (see ADM_ExecutionContract's
+    module-level note) — every collaborator's chat resolves its canvas
+    through this route instead of matching contracts by chat_id, so two
+    different chats in the same project always land on the same contract.
+    Old contracts from before this route existed may still have several
+    chat-scoped ones for a single project; the most recent one wins and
+    becomes "the" shared model going forward — no migration of the rest,
+    they just stop being resolved to."""
+    await ADM_assert_project_access(project_id, current_user_id)
+    db = ADM_get_db()
+    doc = await db[ADM_COLLECTION_EXECUTION_CONTRACTS].find_one(
+        {"project_id": project_id}, {"_id": 0}, sort=[("created_at", -1)],
+    )
+    if not doc:
+        raise HTTPException(404, "No model started for this project yet")
     return doc

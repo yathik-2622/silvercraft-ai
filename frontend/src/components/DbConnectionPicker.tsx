@@ -16,7 +16,11 @@ export const DbConnectionPicker: React.FC<Props> = ({ projectId, selectedId, onS
   const [isOpen, setIsOpen] = useState(false);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [dialect, setDialect] = useState(DIALECT_OPTIONS[0]);
-  const [dsnRef, setDsnRef] = useState("");
+  const [host, setHost] = useState("");
+  const [port, setPort] = useState("");
+  const [database, setDatabase] = useState("");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -28,15 +32,22 @@ export const DbConnectionPicker: React.FC<Props> = ({ projectId, selectedId, onS
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!dsnRef.trim()) return;
+    if (!host.trim() || !database.trim() || !username.trim()) return;
     setError(null);
     setIsCreating(true);
     try {
-      const conn = await dbConnectionsApi.create(projectId, dialect, dsnRef.trim());
+      const conn = await dbConnectionsApi.create(projectId, {
+        dialect, host: host.trim(), port: Number(port) || 5432, database: database.trim(),
+        username: username.trim(), password,
+      });
       setConnections((prev) => [conn, ...prev]);
       onSelect(conn.db_connection_id);
       setShowCreateForm(false);
-      setDsnRef("");
+      setHost("");
+      setPort("");
+      setDatabase("");
+      setUsername("");
+      setPassword("");
       setIsOpen(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create connection.");
@@ -78,9 +89,9 @@ export const DbConnectionPicker: React.FC<Props> = ({ projectId, selectedId, onS
                     ? "bg-blue-50 text-blue-700 font-bold"
                     : "hover:bg-slate-100 text-slate-700"
                 }`}
-                title={`${c.dialect} — ${c.dsn_ref}`}
+                title={`${c.dialect} — ${c.username}@${c.host}:${c.port}/${c.database}`}
               >
-                {c.dialect} — {c.dsn_ref}
+                {c.dialect} — {c.host}/{c.database}
               </button>
             ))}
             {connections.length === 0 && !showCreateForm && (
@@ -109,17 +120,45 @@ export const DbConnectionPicker: React.FC<Props> = ({ projectId, selectedId, onS
                 </select>
                 <input
                   type="text"
-                  value={dsnRef}
-                  onChange={(e) => setDsnRef(e.target.value)}
-                  placeholder="Env var name holding the DSN"
+                  value={host}
+                  onChange={(e) => setHost(e.target.value)}
+                  placeholder="Host"
                   autoFocus
+                  className="w-full px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-lg"
+                />
+                <input
+                  type="number"
+                  value={port}
+                  onChange={(e) => setPort(e.target.value)}
+                  placeholder="Port"
+                  className="w-full px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-lg"
+                />
+                <input
+                  type="text"
+                  value={database}
+                  onChange={(e) => setDatabase(e.target.value)}
+                  placeholder="Database name"
+                  className="w-full px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-lg"
+                />
+                <input
+                  type="text"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  placeholder="Username"
+                  className="w-full px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-lg"
+                />
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="Password"
                   className="w-full px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-lg"
                 />
                 {error && <p className="text-rose-600 font-semibold">{error}</p>}
                 <div className="flex gap-1.5">
                   <button
                     type="submit"
-                    disabled={isCreating || !dsnRef.trim()}
+                    disabled={isCreating || !host.trim() || !database.trim() || !username.trim()}
                     className="flex-1 px-2 py-1.5 rounded-lg bg-brand-orange text-white font-bold disabled:opacity-50 cursor-pointer"
                   >
                     {isCreating ? "Adding..." : "Add"}

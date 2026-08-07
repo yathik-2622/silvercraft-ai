@@ -107,6 +107,12 @@ export interface ChatMessage {
   // when this message was sent (Phase 4). Shown as a small card above
   // the message text, matching how Claude/ChatGPT show an attachment.
   file_refs?: ChatFileRef[];
+  // Only present on an assistant "stage output is ready" message — the
+  // artifact_id(s) (== task_id) completed in that stage batch. Rendered as
+  // clickable chips (ArtifactChip) resolved against ChatWorkspace's
+  // `artifacts` state, which is hydrated from both the live WS stream and
+  // GET /chats/{id}/artifacts on reload.
+  artifact_ids?: string[];
   // Client-only — a snapshot of this turn's reasoning events, taken the
   // moment the response completes. Never sent to the backend, never
   // persisted; lost on page refresh same as the old global reasoning panel
@@ -245,6 +251,19 @@ export interface HitlGate {
   status: "pending" | "approved" | "edited";
   result_snapshot: Record<string, unknown> | null;
   user_override: boolean;
+  // Who last approved/edited this gate — unset until someone does. Contracts
+  // are shared per-project (any collaborator can act on any gate), so this
+  // is the only "who touched this" record; powers the attribution line and
+  // the conflict-modal banner.
+  resolved_by_user_id?: string | null;
+}
+
+export interface TaskRevision {
+  output: unknown;
+  confidence: number | null;
+  edited_by_user_id: string | null;
+  created_at: string;
+  action: "generated" | "approved" | "edited";
 }
 
 export interface TaskResult {
@@ -253,6 +272,10 @@ export interface TaskResult {
   citations?: unknown[];
   skill_id?: string;
   user_override?: boolean;
+  // Every generated/approved/edited revision of this task's output, oldest
+  // first — length doubles as the optimistic-concurrency token sent back
+  // to ADM_hitl_edit as base_revision_count.
+  history?: TaskRevision[];
   [key: string]: unknown;
 }
 
@@ -376,7 +399,10 @@ export interface DbConnection {
   db_connection_id: string;
   project_id: string;
   dialect: string;
-  dsn_ref: string;
+  host: string;
+  port: number;
+  database: string;
+  username: string;
   created_at: string;
 }
 

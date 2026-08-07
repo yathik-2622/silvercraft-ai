@@ -5,10 +5,38 @@ Fully pushed-down SQL: actual row data never leaves the source database;
 only computed stat values return. Uses SQLAlchemy Core (no ORM materialization).
 """
 from typing import Any
+from urllib.parse import quote_plus
 
 from sqlalchemy import create_engine, text
 
 from app.core.privacy import ADM_strip_forbidden_fields
+
+# SQLAlchemy dialect -> driver-qualified URL scheme. Bare "postgresql" and
+# "sqlite" work with SQLAlchemy's own bundled DBAPI drivers; the others need
+# a third-party driver installed (pymysql/pyodbc/cx_oracle) to actually
+# connect — that's an existing, pre-existing-to-this-change gap (the old
+# dsn_ref path hit the same requirement), not something this DSN builder
+# can paper over.
+ADM_DIALECT_SCHEMES = {
+    "postgresql": "postgresql+psycopg2",
+    "mysql": "mysql+pymysql",
+    "mssql": "mssql+pyodbc",
+    "oracle": "oracle+cx_oracle",
+    "sqlite": "sqlite",
+}
+
+
+def ADM_build_dsn(dialect: str, host: str, port: int, database: str, username: str, password: str) -> str:
+    """Assembles a SQLAlchemy connection URL from structured fields — the
+    replacement for the old env-var-reference (dsn_ref) indirection now
+    that DB connections collect real host/port/username/password/database
+    fields directly. sqlite is file-based (no host/port/credentials)."""
+    scheme = ADM_DIALECT_SCHEMES.get(dialect, dialect)
+    if dialect == "sqlite":
+        return f"sqlite:///{database}"
+    user = quote_plus(username)
+    pw = quote_plus(password)
+    return f"{scheme}://{user}:{pw}@{host}:{port}/{database}"
 
 
 def ADM_get_engine(dsn: str):

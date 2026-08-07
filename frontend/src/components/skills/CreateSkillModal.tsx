@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Check, CheckCircle2, Plus, Sparkles, Trash2, Upload, X } from "lucide-react";
 import { ApiError, skillDraftsApi, skillsApi } from "../../api/client";
+import { ModernSelect } from "../ModernSelect";
 import type { HitlMode, Skill, SkillDraftExtracted, SkillWorkflowTask } from "../../types";
 
 interface Props {
@@ -223,15 +224,15 @@ export const CreateSkillModal: React.FC<Props> = ({ projectId, onClose, onCreate
                   <label className="text-[11px] font-bold text-slate-700 block mb-1">
                     Kind {missingFields.includes("kind") && <span className="text-amber-600">*</span>}
                   </label>
-                  <select
+                  <ModernSelect
                     value={form.kind || "task"}
-                    onChange={(e) => updateField("kind", e.target.value as SkillDraftExtracted["kind"])}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-orange/30"
-                  >
-                    <option value="task">Task</option>
-                    <option value="utility">Utility</option>
-                    <option value="workflow">Workflow</option>
-                  </select>
+                    onChange={(v) => updateField("kind", v as SkillDraftExtracted["kind"])}
+                    options={[
+                      { value: "task", label: "Task" },
+                      { value: "utility", label: "Utility" },
+                      { value: "workflow", label: "Workflow" },
+                    ]}
+                  />
                 </div>
               </div>
               {(form.kind || "task") === "workflow" && (
@@ -371,17 +372,7 @@ export const CreateSkillModal: React.FC<Props> = ({ projectId, onClose, onCreate
               </div>
               <div>
                 <label className="text-[11px] font-bold text-slate-700 block mb-1">HITL Mode</label>
-                <select
-                  value={form.hitl_mode || "auto"}
-                  onChange={(e) => updateField("hitl_mode", e.target.value as HitlMode)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-orange/30"
-                >
-                  {HITL_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
+                <ModernSelect value={form.hitl_mode || "auto"} onChange={(v) => updateField("hitl_mode", v as HitlMode)} options={HITL_OPTIONS} />
               </div>
 
               {error && (

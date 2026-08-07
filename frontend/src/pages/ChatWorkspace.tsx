@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "motion/react";
-import { ArrowLeft, Bot, ChevronDown, LayoutPanelTop, Paperclip, Send, Users, Workflow, Wrench, X } from "lucide-react";
-import { chatsApi, contractsApi, dbConnectionsApi, messagesApi, settingsApi, skillsApi } from "../api/client";
+import { ArrowLeft, Bot, ChevronDown, Package, Paperclip, Send, Users, Wrench, X } from "lucide-react";
+import { chatsApi, dbConnectionsApi, messagesApi, projectsApi, settingsApi, skillsApi } from "../api/client";
 import { openReasoningSocket } from "../api/reasoningSocket";
 import type {
   ChatArtifact,
@@ -13,11 +13,14 @@ import type {
   RawFile,
   ReasoningEvent,
   Skill,
+  TargetPlatform,
 } from "../types";
 import { CollaboratorsModal } from "../components/CollaboratorsModal";
+import { ProjectArtifactsModal } from "../components/ProjectArtifactsModal";
 import { SourcePreviewModal } from "../components/SourcePreviewModal";
-import { CreateProjectPromptCard } from "../components/CreateProjectPromptCard";
+import { CreateProjectPromptCard, type QuickChatDbConnectionDraft } from "../components/CreateProjectPromptCard";
 import { FileUploadPicker } from "../components/FileUploadPicker";
+import { SourceConnectionTag } from "../components/SourceConnectionTag";
 import { PlanCanvas } from "../components/canvas/PlanCanvas";
 import { ArtifactCanvas } from "../components/canvas/ArtifactCanvas";
 import { detectArtifactKind } from "../components/canvas/detectArtifactKind";
@@ -71,7 +74,7 @@ export function ADM_clampCanvasWidth(raw: number): number {
 }
 
 export const ChatWorkspace: React.FC<Props> = ({ project, onBack }) => {
-  const { activeChatId, selectChat, refreshChats, openProject } = useWorkspace();
+  const { activeChatId, selectChat, refreshChats, openProject, consumePendingAttachedFiles } = useWorkspace();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState("");
   const [isThinking, setIsThinking] = useState(false);
@@ -82,10 +85,10 @@ export const ChatWorkspace: React.FC<Props> = ({ project, onBack }) => {
   );
   const [loadError, setLoadError] = useState<string | null>(null);
   const [showCollaborators, setShowCollaborators] = useState(false);
+  const [showProjectArtifacts, setShowProjectArtifacts] = useState(false);
   const [contractId, setContractId] = useState<string | null>(null);
   const [projectPromptSubmitting, setProjectPromptSubmitting] = useState(false);
   const [projectPromptError, setProjectPromptError] = useState<string | null>(null);
-  const [rightTab, setRightTab] = useState<"artifacts" | "plan">("artifacts");
   const [artifacts, setArtifacts] = useState<ChatArtifact[]>([]);
   const [activeArtifactId, setActiveArtifactId] = useState<string | null>(null);
   const activeArtifactDebounceRef = useRef<number | null>(null);
@@ -98,6 +101,19 @@ export const ChatWorkspace: React.FC<Props> = ({ project, onBack }) => {
   const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([]);
   const [selectedDbConnectionId, setSelectedDbConnectionId] = useState<string | null>(null);
   const [attachedFiles, setAttachedFiles] = useState<RawFile[]>([]);
+
+  // Source files uploaded on the "New Project" page (CreateProjectCanvas)
+  // ride in via WorkspaceContext's one-shot pending-files handoff — pull
+  // them into the composer's own attached-files state so they behave
+  // exactly like a file attached mid-conversation. Runs once per distinct
+  // project (consumePendingAttachedFiles clears itself after reading, so a
+  // later revisit of the same project can't re-attach stale files).
+  useEffect(() => {
+    if (!project) return;
+    const pending = consumePendingAttachedFiles();
+    if (pending.length > 0) setAttachedFiles((prev) => [...prev, ...pending]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project?.project_id]);
   const [slashSelectedIndex, setSlashSelectedIndex] = useState(0);
   const [showCreateSkillModal, setShowCreateSkillModal] = useState(false);
   const [orchestratorModel, setOrchestratorModel] = useState<string | null>(null);
@@ -165,6 +181,8 @@ export const ChatWorkspace: React.FC<Props> = ({ project, onBack }) => {
     if (!activeChatId) {
       setMessages([]);
       setOrchestratorModel(null);
+      setArtifacts([]);
+      setActiveArtifactId(null);
       return;
     }
 
@@ -179,6 +197,28 @@ export const ChatWorkspace: React.FC<Props> = ({ project, onBack }) => {
       .catch((err) => {
         if (!cancelled) setLoadError(err instanceof Error ? err.message : "Failed to load chat.");
       });
+    // Re-hydrates every artifact chip from a prior run — the WS stream is
+    // live-only, so without this a reload leaves message.artifact_ids with
+    // nothing in `artifacts` to resolve against (Phase 2).
+    chatsApi
+      .listArtifacts(activeChatId)
+      .then((persisted) => {
+        if (cancelled) return;
+        setArtifacts(
+          persisted.map((p) => ({
+            artifact_id: p.artifact_id,
+            task_id: p.artifact_id,
+            skill_id: p.skill_id,
+            stage: p.stage,
+            label: p.label,
+            output: p.output,
+            confidence: p.confidence,
+            kind: detectArtifactKind(p.output),
+            received_at: p.created_at,
+          })),
+        );
+      })
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
@@ -188,28 +228,31 @@ export const ChatWorkspace: React.FC<Props> = ({ project, onBack }) => {
     // A dashboard (project-less) chat can never have a contract — plan_task
     // only ever fires once a project exists (see the "project" gate in
     // app.graphs.orchestrator_graph's missing_info) — so skip the lookup
-    // entirely rather than calling contractsApi.list with no project_id.
-    if (!activeChatId || !project) {
+    // entirely rather than calling projectsApi.getContract with no project.
+    //
+    // Contracts are shared per-project now (see ADM_ExecutionContract's
+    // backend module note) — this resolves the project's ONE contract,
+    // keyed only on project_id, not activeChatId. Every chat in the
+    // project lands on the same contractId, which is the whole point:
+    // whatever one collaborator's chat produced/is resuming shows up here
+    // regardless of which chat this viewer has open.
+    if (!project) {
       setContractId(null);
       return;
     }
     let cancelled = false;
-    contractsApi
-      .list(project.project_id)
-      .then((contracts) => {
-        if (cancelled) return;
-        const match = contracts.find((c) => c.chat_id === activeChatId);
-        setContractId(match ? match.contract_id : null);
+    projectsApi
+      .getContract(project.project_id)
+      .then((contract) => {
+        if (!cancelled) setContractId(contract.contract_id);
       })
-      .catch(() => {});
+      .catch(() => {
+        if (!cancelled) setContractId(null);
+      });
     return () => {
       cancelled = true;
     };
-  }, [activeChatId, project]);
-
-  useEffect(() => {
-    if (contractId) setRightTab("plan");
-  }, [contractId]);
+  }, [project]);
 
   useEffect(() => {
     skillsApi.list().then(setSkills).catch(() => {});
@@ -296,7 +339,7 @@ export const ChatWorkspace: React.FC<Props> = ({ project, onBack }) => {
         const { payload } = event;
         const kind = detectArtifactKind(payload.output);
         const artifact: ChatArtifact = {
-          artifact_id: `${payload.task_id}:${Date.now()}`,
+          artifact_id: payload.task_id,
           task_id: payload.task_id,
           skill_id: payload.skill_id,
           stage: payload.stage,
@@ -306,8 +349,16 @@ export const ChatWorkspace: React.FC<Props> = ({ project, onBack }) => {
           kind,
           received_at: new Date().toISOString(),
         };
-        setArtifacts((prev) => [...prev, artifact]);
-        setRightTab("artifacts");
+        // Mirrors the backend's upsert-by-task_id semantics (a task re-run
+        // after a HITL edit reuses the same task_id/artifact_id) — replace
+        // the existing entry in place rather than accumulate a duplicate.
+        setArtifacts((prev) => {
+          const existingIdx = prev.findIndex((a) => a.artifact_id === artifact.artifact_id);
+          if (existingIdx === -1) return [...prev, artifact];
+          const next = [...prev];
+          next[existingIdx] = artifact;
+          return next;
+        });
         // Multiple tasks in the same stage can complete within
         // milliseconds of each other (Send-based fan-out) — debounce which
         // one ends up focused so the canvas doesn't flash through several
@@ -401,13 +452,42 @@ export const ChatWorkspace: React.FC<Props> = ({ project, onBack }) => {
     if (lastUserMessage) handleSend(lastUserMessage.content);
   };
 
-  const handleCreateProject = async (name: string, domain: string, layer: ProjectLayer) => {
+  const handleCreateProject = async (
+    name: string,
+    domain: string,
+    layer: ProjectLayer,
+    targetPlatform: TargetPlatform,
+    dbConnection: QuickChatDbConnectionDraft | null,
+  ) => {
     if (!activeChatId) return;
     setProjectPromptError(null);
     setProjectPromptSubmitting(true);
     const chatId = activeChatId;
     try {
-      const newProject = await chatsApi.createProjectForChat(chatId, { name, domain, layer });
+      let newProject = await chatsApi.createProjectForChat(chatId, { name, domain, layer });
+      // No POST-time field for this — same follow-up PATCH pattern
+      // CreateProjectCanvas.handleLaunch already uses right after create.
+      try {
+        newProject = await projectsApi.patch(newProject.project_id, { target_platform: targetPlatform });
+      } catch {
+        // Best-effort — the project itself is already created; target
+        // platform can still be set later from Edit Project.
+      }
+      if (dbConnection) {
+        try {
+          await dbConnectionsApi.create(newProject.project_id, {
+            dialect: dbConnection.dialect,
+            host: dbConnection.host,
+            port: Number(dbConnection.port) || 5432,
+            database: dbConnection.database,
+            username: dbConnection.username,
+            password: dbConnection.password,
+          });
+        } catch {
+          // Best-effort — the project still opens; the connection can be
+          // retried from the project card.
+        }
+      }
       // Same chat, now attached to a project — switch into the project's
       // workspace and re-select this exact chat within it (openProject
       // resets activeChatId to null; selectChat right after wins, since
@@ -424,7 +504,7 @@ export const ChatWorkspace: React.FC<Props> = ({ project, onBack }) => {
   const currentModelLabel = modelOptions.find((o) => o.id === (orchestratorModel || "gpt-4o"))?.name || orchestratorModel || "gpt-4o";
 
   const composerInner = (
-    <div className="relative rounded-2xl border border-slate-200 bg-white shadow-[0_8px_24px_rgba(23,20,15,0.08)]">
+    <div className="relative rounded-2xl border border-slate-200 bg-white/90 backdrop-blur-xl shadow-[0_8px_24px_rgba(23,20,15,0.08)]">
       {isSlashCommand && (
         <SlashCommandMenu
           items={slashItems}
@@ -563,51 +643,80 @@ export const ChatWorkspace: React.FC<Props> = ({ project, onBack }) => {
   const isEmpty = messages.length === 0;
 
   return (
-    <div className="w-full h-[calc(100vh-3.5rem)] flex flex-col bg-slate-100">
-      <div className="flex items-center gap-3 border-b border-slate-200 bg-white px-4 py-2.5 shrink-0">
-        <button
-          onClick={onBack}
-          className="p-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 transition-all cursor-pointer shrink-0"
-          title="Back to Projects"
-        >
-          <ArrowLeft className="w-4 h-4" />
-        </button>
-        <div className="flex-1 min-w-0">
-          <div className="text-sm font-extrabold text-slate-900 truncate">{project ? project.name : "Dashboard Chat"}</div>
-          <div className="text-[11px] text-slate-500 truncate">
+    <div className="relative w-full h-screen flex flex-col bg-slate-50 overflow-hidden">
+      {/* Ambient background glow (Phase 5) — same pairing as the dashboard,
+          kept behind everything via z-index so it never interferes with
+          drag/resize or click targets. */}
+      <div className="fixed inset-0 z-0 overflow-hidden pointer-events-none">
+        <div className="absolute top-[-15%] right-[-8%] w-[40%] h-[40%] rounded-full bg-brand-orange/10 blur-[120px]" />
+        <div className="absolute bottom-[-15%] left-[-8%] w-[40%] h-[40%] rounded-full bg-blue-500/10 blur-[120px]" />
+      </div>
+      <div className="relative z-10 flex items-center gap-3 border-b border-slate-200 bg-white/80 backdrop-blur-xl px-4 py-2.5 shrink-0">
+        <div className="flex items-center gap-3 shrink-0">
+          <button
+            onClick={onBack}
+            className="p-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 transition-all cursor-pointer shrink-0"
+            title="Home"
+          >
+            <ArrowLeft className="w-4 h-4" />
+          </button>
+          {project && <SourceConnectionTag projectId={project.project_id} />}
+        </div>
+        <div className="flex-1 min-w-0 flex flex-col items-center text-center px-2">
+          <div className="text-sm font-extrabold text-slate-900 truncate max-w-full">{project ? project.name : "Quick Chat"}</div>
+          <div className="text-[11px] text-slate-500 truncate max-w-full">
             {project ? project.domain : "No project yet — attached the moment one's created"}
           </div>
         </div>
-        {project && (
-          <button
-            onClick={() => setShowCollaborators(true)}
-            className="p-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 transition-all cursor-pointer shrink-0 flex items-center gap-1.5 px-2.5"
-            title="Collaborators"
-          >
-            <Users className="w-3.5 h-3.5" />
-            <span className="text-[11px] font-bold">{project.collaborator_user_ids.length + 1}</span>
-          </button>
-        )}
+        <div className="flex items-center gap-3 shrink-0">
+          {project && (
+            <button
+              onClick={() => setShowProjectArtifacts(true)}
+              className="p-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 transition-all cursor-pointer shrink-0"
+              title="Project Artifacts"
+            >
+              <Package className="w-3.5 h-3.5" />
+            </button>
+          )}
+          {project && (
+            <button
+              onClick={() => setShowCollaborators(true)}
+              className="p-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 transition-all cursor-pointer shrink-0 flex items-center gap-1.5 px-2.5"
+              title="Collaborators"
+            >
+              <Users className="w-3.5 h-3.5" />
+              <span className="text-[11px] font-bold">{project.collaborator_user_ids.length + 1}</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {project && showCollaborators && (
         <CollaboratorsModal project={project} onClose={() => setShowCollaborators(false)} />
       )}
 
+      {project && showProjectArtifacts && (
+        <ProjectArtifactsModal
+          projectId={project.project_id}
+          onClose={() => setShowProjectArtifacts(false)}
+          onOpenChat={(chatId) => selectChat(chatId)}
+        />
+      )}
+
       {loadError ? (
-        <div className="flex-1 flex items-center justify-center text-xs font-semibold text-rose-600">
+        <div className="relative z-10 flex-1 flex items-center justify-center text-xs font-semibold text-rose-600">
           Couldn't load this chat: {loadError}
         </div>
       ) : (
-        <div className="flex-1 flex flex-col lg:flex-row gap-4 p-4 min-h-0">
-          <div className="h-full flex-1 min-w-0 flex flex-col bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+        <div className="relative z-10 flex-1 flex flex-col lg:flex-row gap-4 p-4 min-h-0">
+          <div className="h-full flex-1 min-w-0 flex flex-col bg-white/70 backdrop-blur-xl border border-slate-200 rounded-xl overflow-hidden shadow-sm">
             {isEmpty ? (
               <div className="flex-1 flex flex-col items-center justify-center gap-5 p-6">
-                <div className="text-center space-y-2">
-                  <div className="w-10 h-10 rounded-2xl bg-brand-orange-light text-brand-orange flex items-center justify-center mx-auto border border-brand-orange/20">
-                    <Bot className="w-5 h-5" />
+                <div className="text-center space-y-3">
+                  <div className="w-12 h-12 rounded-2xl bg-brand-orange-light text-brand-orange flex items-center justify-center mx-auto border border-brand-orange/20">
+                    <Bot className="w-6 h-6" />
                   </div>
-                  <p className="text-sm font-bold text-slate-700">{greeting}</p>
+                  <p className="text-xl sm:text-2xl font-extrabold text-slate-800 max-w-lg leading-snug">{greeting}</p>
                 </div>
 
                 <div className="flex flex-wrap gap-2 justify-center max-w-lg">
@@ -645,6 +754,9 @@ export const ChatWorkspace: React.FC<Props> = ({ project, onBack }) => {
                         onRegenerate={handleRegenerate}
                         onSelectCitation={setViewingCitation}
                         onFollowUpClick={(q) => handleSend(q)}
+                        artifacts={artifacts}
+                        activeArtifactId={activeArtifactId}
+                        onSelectArtifact={setActiveArtifactId}
                       />
                     );
                   })}
@@ -709,44 +821,25 @@ export const ChatWorkspace: React.FC<Props> = ({ project, onBack }) => {
                 title="Drag to resize"
               />
               <div
-                className="h-full flex flex-col min-h-0 gap-2 w-full lg:shrink-0"
+                className="h-full min-h-0 w-full lg:shrink-0"
                 style={isDesktop ? { width: canvasWidth } : undefined}
               >
-              <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-xl p-1 shrink-0 shadow-2xs">
-                <button
-                  onClick={() => setRightTab("artifacts")}
-                  className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                    rightTab === "artifacts" ? "bg-brand-orange text-white" : "text-slate-600 hover:bg-slate-100"
-                  }`}
-                >
-                  <LayoutPanelTop className="w-3.5 h-3.5" />
-                  Artifacts
-                </button>
-                {contractId && (
-                  <button
-                    onClick={() => setRightTab("plan")}
-                    className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                      rightTab === "plan" ? "bg-brand-orange text-white" : "text-slate-600 hover:bg-slate-100"
-                    }`}
-                  >
-                    <Workflow className="w-3.5 h-3.5" />
-                    Plan
-                  </button>
-                )}
-              </div>
-
-              <div className="flex-1 min-h-0">
-                {rightTab === "plan" && contractId ? (
-                  <PlanCanvas contractId={contractId} />
-                ) : (
+                {/* Single dynamic canvas (Phase 3) — an artifact chip click
+                    always wins and opens that exact artifact directly; with
+                    none selected, a live plan falls back to the markdown
+                    Plan view. No separate Artifacts/Plan picker to fight
+                    with the click. */}
+                {activeArtifactId || artifacts.length > 0 ? (
                   <ArtifactCanvas
                     artifacts={artifacts}
                     activeArtifactId={activeArtifactId}
                     onSelectArtifact={setActiveArtifactId}
                     isEmpty={artifacts.length === 0}
+                    contractId={contractId}
                   />
-                )}
-              </div>
+                ) : contractId ? (
+                  <PlanCanvas contractId={contractId} />
+                ) : null}
               </div>
             </>
           )}

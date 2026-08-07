@@ -4,7 +4,7 @@ interface Props {
   output: unknown;
 }
 
-function isRecordArray(value: unknown): value is Record<string, unknown>[] {
+export function isRecordArray(value: unknown): value is Record<string, unknown>[] {
   return (
     Array.isArray(value) &&
     value.length > 0 &&
@@ -12,13 +12,13 @@ function isRecordArray(value: unknown): value is Record<string, unknown>[] {
   );
 }
 
-function formatValue(value: unknown): string {
+export function formatValue(value: unknown): string {
   if (value === null || value === undefined) return "—";
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
 }
 
-function humanizeKey(key: string): string {
+export function humanizeKey(key: string): string {
   return key
     .replace(/_/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
@@ -34,12 +34,12 @@ function humanizeKey(key: string): string {
 export const RecordArrayTable: React.FC<{ rows: Record<string, unknown>[]; compact?: boolean }> = ({ rows, compact }) => {
   const columns = Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
   return (
-    <div className={`overflow-x-auto rounded-lg border border-slate-200 ${compact ? "max-h-32 overflow-y-auto" : ""}`}>
-      <table className="w-full text-[11px]">
-        <thead className="bg-slate-50">
+    <div className={`overflow-x-auto rounded-lg border border-slate-200 ${compact ? "max-h-56 overflow-y-auto" : ""}`}>
+      <table className="w-full text-xs">
+        <thead className="bg-slate-50 sticky top-0 z-10">
           <tr>
             {columns.map((c) => (
-              <th key={c} className="text-left px-2 py-1.5 font-bold text-slate-600 whitespace-nowrap">
+              <th key={c} className="text-left px-3 py-2.5 font-bold text-slate-600 whitespace-nowrap border-b border-slate-200">
                 {humanizeKey(c)}
               </th>
             ))}
@@ -47,9 +47,9 @@ export const RecordArrayTable: React.FC<{ rows: Record<string, unknown>[]; compa
         </thead>
         <tbody className="divide-y divide-slate-100">
           {rows.map((row, idx) => (
-            <tr key={idx}>
+            <tr key={idx} className="hover:bg-slate-50/80 transition-colors">
               {columns.map((c) => (
-                <td key={c} className="px-2 py-1.5 text-slate-700 align-top">
+                <td key={c} className="px-3 py-2.5 text-slate-700 align-top">
                   {renderCellValue(row[c])}
                 </td>
               ))}
@@ -81,7 +81,7 @@ const ChipList: React.FC<{ items: unknown[] }> = ({ items }) => (
 const KeyValueRows: React.FC<{ obj: Record<string, unknown> }> = ({ obj }) => (
   <div className="rounded-lg border border-slate-200 divide-y divide-slate-100">
     {Object.entries(obj).map(([k, v]) => (
-      <div key={k} className="flex items-start justify-between gap-3 px-2.5 py-1.5 text-[11px]">
+      <div key={k} className="flex items-start justify-between gap-3 px-3 py-2 text-xs">
         <span className="font-semibold text-slate-500 shrink-0">{humanizeKey(k)}</span>
         <span className="text-slate-800 text-right">{formatValue(v)}</span>
       </div>
@@ -99,12 +99,60 @@ const KeyValueRows: React.FC<{ obj: Record<string, unknown> }> = ({ obj }) => (
  * JSON string instead of a real nested table. This is the fix: every
  * value, at every level, goes through the same shape-dispatch.
  */
-function renderCellValue(value: unknown): React.ReactNode {
+export function renderCellValue(value: unknown): React.ReactNode {
   if (isRecordArray(value)) return <RecordArrayTable rows={value} compact />;
   if (Array.isArray(value)) return value.length === 0 ? "—" : <ChipList items={value} />;
   if (typeof value === "object" && value !== null) return <KeyValueRows obj={value as Record<string, unknown>} />;
   return formatValue(value);
 }
+
+/** A "per-table" record array: each row represents one table's profiling/
+ * dictionary/etc. output (a `table_name` key plus at least one nested
+ * array field carrying the real per-column detail rows) — e.g. profiling
+ * run across 4 tables. Rendered as its own full-size vertical section per
+ * table, sub-headed by table name, instead of folding all 4 tables into
+ * one combined table with a tiny scrollable nested cell per row. */
+function isPerTableArray(value: unknown): value is Record<string, unknown>[] {
+  if (!isRecordArray(value)) return false;
+  return (
+    value.every((row) => typeof row.table_name === "string") &&
+    value.some((row) => Object.values(row).some((v) => isRecordArray(v)))
+  );
+}
+
+const PerTableSections: React.FC<{ rows: Record<string, unknown>[] }> = ({ rows }) => (
+  <div className="space-y-4">
+    {rows.map((row, idx) => {
+      const nestedArrayEntry = Object.entries(row).find(([, v]) => isRecordArray(v)) as
+        | [string, Record<string, unknown>[]]
+        | undefined;
+      const metaEntries = Object.entries(row).filter(
+        ([k]) => k !== "table_name" && (!nestedArrayEntry || k !== nestedArrayEntry[0]),
+      );
+      return (
+        <div key={idx} className="rounded-xl border border-slate-200 overflow-hidden">
+          <div className="bg-slate-50 px-3.5 py-2.5 border-b border-slate-200 flex items-center justify-between flex-wrap gap-x-4 gap-y-1">
+            <h4 className="text-sm font-extrabold text-slate-900">{String(row.table_name)}</h4>
+            <div className="flex items-center gap-3 text-[11px] text-slate-500 font-semibold">
+              {metaEntries.map(([k, v]) => (
+                <span key={k}>
+                  {humanizeKey(k)}: <span className="text-slate-700">{formatValue(v)}</span>
+                </span>
+              ))}
+            </div>
+          </div>
+          <div className="p-2.5">
+            {nestedArrayEntry ? (
+              <RecordArrayTable rows={nestedArrayEntry[1]} />
+            ) : (
+              <p className="text-xs text-slate-400 p-2">No detail rows.</p>
+            )}
+          </div>
+        </div>
+      );
+    })}
+  </div>
+);
 
 /**
  * Task outputs are whatever shape the skill that produced them returned —
@@ -119,6 +167,9 @@ function renderCellValue(value: unknown): React.ReactNode {
  * instead of a single table, so that shape is handled first, directly.
  */
 export const TaskOutputRenderer: React.FC<Props> = ({ output }) => {
+  if (isPerTableArray(output)) {
+    return <PerTableSections rows={output} />;
+  }
   if (isRecordArray(output)) {
     return <RecordArrayTable rows={output} />;
   }
@@ -135,7 +186,7 @@ export const TaskOutputRenderer: React.FC<Props> = ({ output }) => {
         const isCompound = (typeof value === "object" && value !== null) || Array.isArray(value);
         if (!isCompound) {
           return (
-            <div key={key} className="flex items-start justify-between gap-3 text-[11px]">
+            <div key={key} className="flex items-start justify-between gap-3 text-xs">
               <span className="font-semibold text-slate-500 shrink-0">{humanizeKey(key)}</span>
               <span className="text-slate-800 text-right">{formatValue(value)}</span>
             </div>
@@ -143,15 +194,15 @@ export const TaskOutputRenderer: React.FC<Props> = ({ output }) => {
         }
         return (
           <div key={key}>
-            <div className="text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
+            <div className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-1.5">
               {humanizeKey(key)}
             </div>
-            {renderCellValue(value)}
+            {isPerTableArray(value) ? <PerTableSections rows={value} /> : renderCellValue(value)}
           </div>
         );
       })}
 
-      {entries.length === 0 && <p className="text-[11px] text-slate-400">No output fields.</p>}
+      {entries.length === 0 && <p className="text-xs text-slate-400">No output fields.</p>}
     </div>
   );
 };

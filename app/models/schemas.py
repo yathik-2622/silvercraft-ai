@@ -107,10 +107,13 @@ class ADM_Project(BaseModel):
 
 
 class ADM_ProjectPatchRequest(BaseModel):
-    """Owner-only (see app.core.ownership.ADM_assert_project_owner)."""
+    """Owner-only (see app.core.ownership.ADM_assert_project_owner). Every
+    field a project can be created with is editable here except its DB
+    connection (managed separately, never through this route)."""
     name: Optional[str] = None
     domain: Optional[str] = None
     target_platform: Optional[str] = None
+    layer: Optional[str] = None
 
 
 class ADM_CollaboratorAddRequest(BaseModel):
@@ -240,6 +243,13 @@ class ADM_HitlGate(BaseModel):
     status: Literal["pending", "approved", "edited"] = "pending"
     result_snapshot: Optional[dict] = None
     user_override: bool = False
+    # Who resolved this gate — unset until ADM_hitl_approve/ADM_hitl_edit
+    # first touches it. Contracts are shared across every collaborator on a
+    # project (see ADM_ExecutionContract's module-level note), so this is
+    # the only record of WHICH collaborator last acted on a given task —
+    # powers the "Last touched by X" attribution and the conflict-modal
+    # banner shown when a stale edit collides with it.
+    resolved_by_user_id: Optional[str] = None
 
 
 class ADM_PlannedTask(BaseModel):
@@ -271,6 +281,13 @@ class ADM_CommentCreateRequest(BaseModel):
 
 
 class ADM_ExecutionContract(BaseModel):
+    """One shared model per project — every collaborator's chat resolves to
+    the SAME contract via GET /projects/{project_id}/contract (the frontend
+    never looks this up by chat_id). `chat_id` below is kept only as
+    provenance ("which chat's message first triggered planning"), not as an
+    ownership boundary; ADM_orchestrator_task_async guards against a second
+    chat forking a competing contract while one is already active — see the
+    guard right before its ADM_plan_task.delay(...) call."""
     contract_id: str = Field(default_factory=lambda: ADM_new_id("contract"))
     project_id: str
     chat_id: str
@@ -301,7 +318,17 @@ class ADM_RunState(BaseModel):
 
 
 class ADM_HitlResolveRequest(BaseModel):
-    edited_output: Optional[dict] = None  # present only for "edit"
+    # present only for "edit" — a task's real `output` can be a top-level
+    # dict OR a top-level array (e.g. discover_relationships' candidate-
+    # relationships list), so this must accept both; ADM_hitl_edit stores
+    # it back opaquely and never assumes dict-ness.
+    edited_output: Optional[dict | list] = None
+    # Optimistic-concurrency check — how many task_results[task_id].history
+    # entries the client had seen when it started editing. ADM_hitl_edit
+    # rejects with 409 if someone else has since added a newer entry
+    # (a collaborator's own approve/edit) rather than silently overwriting
+    # it. None (an older client, or a first-ever edit) skips the check.
+    base_revision_count: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
@@ -323,14 +350,29 @@ class ADM_DbConnection(BaseModel):
     db_connection_id: str = Field(default_factory=lambda: ADM_new_id("dbc"))
     project_id: str
     dialect: str
-    dsn_ref: str  # a reference/secret name, never the raw credential blob
+    host: str
+    port: int
+    database: str
+    username: str
+    # Fernet ciphertext via ADM_encrypt_secret (app/core/runtime_settings.py)
+    # — same helper already used for BYOK LLM API keys. Decrypted only at
+    # the point a real connection is opened (ADM_profile_db_connection);
+    # never returned by any route — see ADM_DbConnection.public().
+    password_encrypted: str
     created_at: str = Field(default_factory=ADM_now)
+
+    def public(self) -> dict:
+        return self.model_dump(exclude={"password_encrypted"})
 
 
 class ADM_DbConnectionCreateRequest(BaseModel):
     project_id: str
     dialect: str
-    dsn_ref: str  # env var name the real DSN lives under — see routes_db_connections.py
+    host: str
+    port: int
+    database: str
+    username: str
+    password: str
 
 
 # ---------------------------------------------------------------------------
@@ -350,6 +392,24 @@ class ADM_ArtifactRecord(BaseModel):
     artifact_type: Literal["ddl", "sttm", "json", "other"]
     filename: str
     local_path: str
+    created_at: str = Field(default_factory=ADM_now)
+
+
+class ADM_ChatArtifact(BaseModel):
+    """One completed Stage 1-4 task's REAL structured output, persisted so
+    a chat's artifact chips (rendered under the assistant message that
+    announced them) still resolve after a page reload — not just live over
+    the WS. artifact_id == the task_id that produced it (one task, one
+    artifact, today). Distinct from ADM_ArtifactRecord, which is the final
+    per-contract DDL/STTM export bundle, not a per-task chat artifact."""
+    artifact_id: str
+    chat_id: str
+    skill_id: str
+    stage: int
+    label: str
+    output: Any = None
+    confidence: Optional[float] = None
+    citations: list[dict] = Field(default_factory=list)
     created_at: str = Field(default_factory=ADM_now)
 
 

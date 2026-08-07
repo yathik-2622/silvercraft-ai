@@ -97,11 +97,15 @@ def ADM_decrypt_secret(ciphertext: str) -> str:
 
 
 def ADM__mask_secret(value: str) -> str:
+    """Fixed-width mask regardless of the raw key's length — a long provider
+    key (some run 100+ chars) previously produced a mask whose asterisk run
+    scaled 1:1 with key length, overflowing the settings UI's card width.
+    Always exactly first4 + 6 dots + last4 (or all-dots for short values)."""
     if not value:
         return ""
     if len(value) <= 8:
-        return "*" * len(value)
-    return f"{value[:4]}{'*' * max(4, len(value) - 8)}{value[-4:]}"
+        return "•" * len(value)
+    return f"{value[:4]}{'•' * 6}{value[-4:]}"
 
 
 def ADM__normalize_provider(provider: str | None) -> str:
@@ -285,6 +289,26 @@ async def ADM_discover_models_for_user(user_id: str | None) -> dict:
         }
 
 
+class ADM_MissingProviderKeyError(RuntimeError):
+    """Raised when a non-gateway BYOK provider (openrouter/groq/nvidia) has
+    no usable API key — either never configured, or its stored ciphertext no
+    longer decrypts (e.g. after a SETTINGS_ENCRYPTION_KEY rotation, which
+    silently loses the old value — see ADM_decrypt_secret's docstring).
+    Without this check, a blank Authorization header would still reach the
+    real provider and bounce back a generic 401 that looks identical to "the
+    key is wrong" — confirmed live: a batch of pre-rotation user_settings
+    documents all silently stopped decrypting, and every one of those
+    users' next chat message failed with an indistinguishable 401, even
+    though (from their side) nothing about their saved key had changed.
+    Raised early instead, with a message that actually tells them what to
+    do: re-enter and re-save the key so it's encrypted with the key
+    currently in use. "custom" is deliberately excluded — it always falls
+    back to the platform's own key (see ADM__provider_api_key), so it can
+    never hit this "no key at all" case; a wrong key there is a genuine
+    provider-side rejection, and the existing generic 401 message is the
+    right one for that."""
+
+
 # ---------------------------------------------------------------------------
 # BYOK-aware chat-completion calls — used ONLY from
 # app/graphs/orchestrator_graph.py's two LLM call sites. Every other caller
@@ -294,10 +318,21 @@ async def ADM_discover_models_for_user(user_id: str | None) -> dict:
 # comment in orchestrator_graph.py for exactly where these two paths split.
 # ---------------------------------------------------------------------------
 
+def ADM__require_provider_key(runtime: dict) -> None:
+    if runtime["provider"] != "gateway" and not runtime["api_key"]:
+        raise ADM_MissingProviderKeyError(
+            f"No API key configured for {runtime['provider_label']}. Open Settings, "
+            f"enter your {runtime['provider_label']} key, and save — if you already "
+            f"saved one before, it may no longer be readable after a server-side "
+            f"security key rotation and needs to be re-entered."
+        )
+
+
 async def ADM_chat_completion_json_for_user(
     messages: list[dict], user_id: str | None, temperature: float = 0.1, model: str | None = None,
 ) -> dict:
     runtime = await ADM_resolve_llm_runtime(user_id)
+    ADM__require_provider_key(runtime)
     resolved_model = model or runtime["default_model"]
     client = AsyncOpenAI(api_key=runtime["api_key"], base_url=runtime["base_url"])
     resp = await client.chat.completions.create(
@@ -316,6 +351,7 @@ async def ADM_stream_chat_completion_for_user(
     messages: list[dict], user_id: str | None, temperature: float = 0.3, model: str | None = None,
 ):
     runtime = await ADM_resolve_llm_runtime(user_id)
+    ADM__require_provider_key(runtime)
     resolved_model = model or runtime["default_model"]
     client = AsyncOpenAI(api_key=runtime["api_key"], base_url=runtime["base_url"])
     stream = await client.chat.completions.create(

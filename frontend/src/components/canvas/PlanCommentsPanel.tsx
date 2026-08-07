@@ -33,7 +33,7 @@ export const PlanCommentsPanel: React.FC<Props> = ({ contractId, comments, onCom
   };
 
   return (
-    <div className="border-t border-slate-200 bg-slate-50/60 p-3 space-y-2">
+    <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-3 space-y-2">
       <div className="text-[10px] font-black uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
         <MessageSquare className="w-3 h-3" />
         Plan Comments ({comments.length})

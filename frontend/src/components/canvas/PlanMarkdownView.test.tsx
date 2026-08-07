@@ -64,11 +64,36 @@ describe("PlanMarkdownView (Phase 8 — Antigravity-style plan rendering)", () =
     expect(html).toContain("Use surrogate keys.");
   });
 
-  test("a plan-wide comment (task_id null) is not rendered as a task instruction chip", () => {
+  test("a plan-wide comment (task_id null) shows in the Plan Comments panel, not as a per-task instruction chip", () => {
     const contract = buildContract({
       comments: [{ author_user_id: "u1", text: "General note.", created_at: "2026-01-01T00:00:00Z", task_id: null }],
     });
     const html = renderToStaticMarkup(React.createElement(PlanMarkdownView, { contract, onCommentAdded: () => {} }));
-    expect(html).not.toContain("General note.");
+    // Phase 3 folded the plan-wide comments panel into PlanMarkdownView
+    // (it used to only be reachable from the now-removed graph view) — a
+    // plan-wide comment SHOULD appear there.
+    expect(html).toContain("Plan Comments");
+    expect(html).toContain("General note.");
+    // It must not ALSO get attached to the unrelated task block as a
+    // per-task instruction chip (that's task_id-scoped only).
+    const taskBlockMatch = html.match(/<div class="group relative[\s\S]*?<\/div><\/div>/);
+    expect(taskBlockMatch?.[0] ?? "").not.toContain("General note.");
+  });
+
+  test("passing runState shows a per-task completion status icon", () => {
+    const contract = buildContract();
+    const runState = {
+      contract_id: "contract_1",
+      current_stage: 2,
+      stage_status: { "1": "done" },
+      task_results: { task_profile: { output: {}, confidence: 0.9 } },
+      hitl_gates: [],
+      checkpoint_id: null,
+      updated_at: "2026-01-01T00:00:00Z",
+    };
+    const html = renderToStaticMarkup(
+      React.createElement(PlanMarkdownView, { contract, runState, onCommentAdded: () => {} }),
+    );
+    expect(html).toContain('title="done"');
   });
 });
